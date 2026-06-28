@@ -234,6 +234,9 @@
   .applybtn:hover,.tipbtn:hover{background:var(--accent);color:#06121a}
   .tiprow .tipbtn{border-color:var(--warn);background:rgba(251,146,60,.16);color:var(--warn)}
   .tiprow .tipbtn:hover{background:var(--warn);color:#1a1206}
+  .autofilled{border-color:var(--accent)!important;box-shadow:0 0 0 2px var(--accent-soft) inset}
+  .autobar{margin-top:12px;font-size:12.5px;color:var(--accent);background:var(--accent-soft);
+        border:1px solid rgba(45,212,191,.28);border-radius:9px;padding:9px 12px}
   .picker{margin-bottom:12px;padding:11px 12px;border:1px dashed var(--accent);border-radius:11px;background:var(--accent-soft)}
   .tagi.pick{cursor:pointer}
   .chips{display:flex;flex-wrap:wrap;gap:7px;margin:2px 0 8px}
@@ -379,7 +382,9 @@ const $=s=>document.querySelector(s);
 const $$=s=>[...document.querySelectorAll(s)];
 let TOOLS=[], BUILDINGS=[], BMETA={}, CURRENT=null, ACTIVE_B="", CAT_FILTER="", RAWTEXT="";
 let CMDSET=new Set();
-let LAYER_CACHE={};
+let LAYER_CACHE={}, METRICS_CACHE={};
+const METRIC_MAP={"--area":"area","--footprint":"footprint","--builtup":"builtup",
+                  "--perimeter":"perimeter","--floors":"floors"};
 const PRESETS={
   "--steel":["0.8","1.0","1.5","2.0","2.5","3.0"],
   "--pct":["0.8","1.0","1.5","2.0","2.5","3.0"],
@@ -430,7 +435,7 @@ function renderSwitch(){
 }
 function setActive(n){ACTIVE_B=n;renderBuildings();renderSwitch();
   const sel=$("#p_building");if(sel)sel.value=n;
-  populateLayerSelects();
+  populateLayerSelects();autofillForm();
   closeDrawer();}
 async function removeBld(n){
   if(!confirm(`Remove building "${n}" from this plot?`))return;
@@ -446,7 +451,7 @@ $("#addForm").addEventListener("submit",async e=>{e.preventDefault();
   try{
     const d=await(await fetch("/api/upload",{method:"POST",body:f})).json();
     if(d.error){toast(d.error,"err");}
-    else{ACTIVE_B=$("#bname").value.trim();LAYER_CACHE={};toast("Drawing uploaded","ok");
+    else{ACTIVE_B=$("#bname").value.trim();LAYER_CACHE={};METRICS_CACHE={};toast("Drawing uploaded","ok");
       $("#bname").value="";$("#bnote").value="";$("#bfile").value="";loadBuildings();}
   }catch(err){toast("Upload failed: "+err,"err");}
   btn.disabled=false;btn.textContent="Upload drawing";
@@ -536,6 +541,7 @@ function pick(cmd){
     html=`<div class="field" style="color:var(--muted)">No options — just press Run.</div>`;
   $("#rFields").innerHTML=html;
   populateLayerSelects();
+  autofillForm();
   $("#result").style.display="none";
   $("#runner").style.display="block";
   $("#runner").scrollIntoView({behavior:"smooth",block:"start"});
@@ -655,6 +661,33 @@ $("#rDl").addEventListener("click",()=>{
   const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=name;a.click();
   URL.revokeObjectURL(a.href);
 });
+
+/* ---------- auto-fill geometry from the DXF ---------- */
+async function getMetrics(b){
+  if(!b)return {};
+  if(METRICS_CACHE[b])return METRICS_CACHE[b];
+  try{
+    const d=await(await fetch("/api/measure?building="+encodeURIComponent(b))).json();
+    METRICS_CACHE[b]=d.metrics||{};
+  }catch(e){METRICS_CACHE[b]={};}
+  return METRICS_CACHE[b];
+}
+async function autofillForm(){
+  $$(".autobar").forEach(e=>e.remove());
+  if(!CURRENT||!ACTIVE_B)return;
+  const fields=$$('#rFields [data-p]').filter(f=>f.dataset.p in METRIC_MAP && f.tagName!=="SELECT");
+  if(!fields.length)return;
+  const m=await getMetrics(ACTIVE_B);
+  let any=false;
+  fields.forEach(f=>{const v=m[METRIC_MAP[f.dataset.p]];
+    if(v!=null){f.value=v;f.classList.add("autofilled");f.title="auto-filled from the drawing";any=true;}});
+  if(any){
+    const bar=document.createElement("div");bar.className="autobar";
+    bar.innerHTML="✨ Filled from the drawing — just press <b>Run</b>. "+
+      "<span style='opacity:.8'>Spec values (thickness, rate, mix) use standard defaults — edit if needed.</span>";
+    $("#rFields").insertAdjacentElement("afterend",bar);
+  }
+}
 
 /* ---------- dropdown fields (presets + DXF layers) ---------- */
 function selField(p,options,strict,id){

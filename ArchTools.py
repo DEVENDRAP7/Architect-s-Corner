@@ -134,6 +134,12 @@ CATALOG = {
     "calc-chajja":       ("Chajja / Sunshade", "Chajja concrete + steel"),
     "calc-chajja-shutter": ("Chajja / Sunshade", "Chajja shuttering / formwork area"),
     "calc-chajja-plaster": ("Chajja / Sunshade", "Chajja plaster area + mortar"),
+    # Slab suite
+    "slab":              ("Slab", "Auto slab takeoff (from drawing)"),
+    "calc-slab":         ("Slab", "Slab concrete + steel"),
+    "calc-slab-steel":   ("Slab", "Slab reinforcement (kg/m² or %)"),
+    "calc-slab-shutter": ("Slab", "Slab shuttering / formwork"),
+    "calc-slab-plaster": ("Slab", "Slab ceiling plaster + mortar"),
     "beams":       ("Structure", "Beams: count + length"),
     "footings":    ("Structure", "Footings count"),
     "staircases":  ("Structure", "Staircases + lifts"),
@@ -1290,6 +1296,103 @@ def cmd_calc_chajja_plaster(args):
           f"sand ~ {mortar*1.1:.2f} m3")
 
 
+# ======================================================================
+# SLAB SUITE  --  floor-slab takeoff, mostly AUTO from the drawing
+# ----------------------------------------------------------------------
+# `slab` reads everything it can from the DXF -- the slab plan area (footprint
+# or a chosen layer) and the number of floors (from the drawing's own level
+# marks) -- so one click gives concrete, steel, shuttering and ceiling plaster
+# with NOTHING typed. Defaults (thickness, steel rate) are sensible and
+# overridable. The calc-* slabs are the manual fallback when there's no DXF.
+# ======================================================================
+def cmd_slab(args):
+    """One-click slab takeoff straight from the drawing: reads the slab area
+    (footprint, or --layer) and the floor count (from the level marks), then
+    auto-computes concrete + steel + shuttering + ceiling plaster. Override
+    only if you want: --thk (mm), --steelrate (kg/m2), --floors, --layer."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    res = _largest_closed(doc, msp, args.layer)
+    if not res:
+        print("No slab boundary found"
+              + (f" on layer '{args.layer}'" if args.layer else "")
+              + ". Pass --layer <slab/boundary layer>.")
+        return
+    area, per = res
+    if args.floors:
+        floors, seq = int(args.floors), []
+    else:
+        lv = extract_levels(msp)
+        seq = [f for f in FLOOR_ORDER if f in lv]
+        floors = len(seq) or 1
+    thk = args.thk / 1000.0
+    conc = area * thk * floors
+    steel = area * floors * args.steelrate
+    shutter = (area + per * thk) * floors
+    plaster = area * floors
+    mortar = plaster * (args.ptk / 1000.0)
+    print("SLAB TAKEOFF  (auto from drawing)")
+    print(f"Slab area / floor : {area:,.2f} m2"
+          + (f"  (layer '{args.layer}')" if args.layer else "  (footprint)"))
+    print(f"Floors counted    : {floors}"
+          + (f"  ({', '.join(seq)})" if seq else "  (--floors)"))
+    print(f"Thickness         : {args.thk:.0f} mm")
+    print()
+    print(f"Concrete   = {area:,.1f} x {thk:.3f} x {floors} = {conc:,.2f} m3")
+    print(f"Steel      ({args.steelrate:.0f} kg/m2) = {steel:,.0f} kg "
+          f"({steel/1000:.2f} tonne)")
+    print(f"Shuttering = (area + perim {per:,.0f} m x thk) x {floors} "
+          f"= {shutter:,.1f} m2")
+    print(f"Ceiling plaster = {plaster:,.1f} m2;  mortar @ {args.ptk:.0f} mm "
+          f"= {mortar:.2f} m3")
+    if not args.layer:
+        print("Tip: pass --layer <slab/boundary layer> for an exact area.")
+
+
+def cmd_calc_slab(args):
+    """Slab concrete + steel (manual): area x thickness x floors, steel by
+    kg/m2. Use the 'slab' tool to pull these from a drawing automatically."""
+    thk = args.thk / 1000.0
+    conc = args.area * thk * args.n
+    steel = args.area * args.n * args.steelrate
+    print(f"Slab {args.area} m2 x {args.thk:.0f} mm x {args.n} floors "
+          f"= {conc:,.2f} m3 concrete")
+    print(f"Steel ({args.steelrate:.0f} kg/m2) = {steel:,.0f} kg "
+          f"({steel/1000:.2f} tonne)")
+
+
+def cmd_calc_slab_steel(args):
+    """Slab reinforcement two ways: area-based (kg/m2) always; plus the
+    %-of-concrete method if --vol is given."""
+    area_kg = args.area * args.floors * args.rate
+    print(f"Area method : {args.area} m2 x {args.floors} x {args.rate:.0f} "
+          f"kg/m2 = {area_kg:,.0f} kg ({area_kg/1000:.2f} t)")
+    if args.vol:
+        vol_kg = args.vol * 7850 * args.pct / 100.0
+        print(f"% method    : {args.vol} m3 x {args.pct}% x 7850 "
+              f"= {vol_kg:,.0f} kg ({vol_kg/1000:.2f} t)")
+
+
+def cmd_calc_slab_shutter(args):
+    """Slab shuttering / formwork: soffit (plan area) + edge band
+    (perimeter x thickness), x floors."""
+    edge = args.perimeter * (args.thk / 1000.0)
+    shutter = (args.area + edge) * args.n
+    print(f"Soffit {args.area} m2 + edge ({args.perimeter} m x {args.thk:.0f} "
+          f"mm = {edge:.2f} m2)")
+    print(f"Formwork ({args.n} floors) = {shutter:,.1f} m2")
+
+
+def cmd_calc_slab_plaster(args):
+    """Slab ceiling plaster area + mortar (x floors)."""
+    plaster = args.area * args.n
+    mortar = plaster * (args.thk / 1000.0)
+    print(f"Ceiling plaster = {args.area} m2 x {args.n} = {plaster:,.1f} m2")
+    print(f"Mortar @ {args.thk:.0f} mm = {mortar:.3f} m3")
+    print(f"Cement (1:4, ~5.5 bag/m3) ~ {mortar*5.5:.1f} bags; "
+          f"sand ~ {mortar*1.1:.2f} m3")
+
+
 def cmd_colschedule(args):
     """Full column schedule: every tag (C1..Cn) with its section, plus totals
     per size."""
@@ -2278,6 +2381,16 @@ FORMULAS = [
      "formwork contact area; back against wall & top finished are excluded"),
     ("calc-chajja-plaster", "area = (2 x proj x length + drip) x N;  mortar = area x thk",
      "top + bottom faces + front drip; 1:4 plaster, 12 mm default"),
+    ("slab", "auto: conc = area x thk x floors;  steel = area x floors x kg/m2",
+     "area = footprint or --layer; floors counted from the drawing's level marks; thk 150mm, steel 10 kg/m2 default"),
+    ("calc-slab", "conc = area x thk x floors;  steel = area x floors x kg/m2",
+     "manual slab; default 150 mm, 10 kg/m2"),
+    ("calc-slab-steel", "area: area x floors x kg/m2;  pct: vol x steel% x 7850",
+     "kg/m2 ~8-12 for slabs; %-of-concrete ~0.8-1%"),
+    ("calc-slab-shutter", "area = (plan_area + perimeter x thk) x floors",
+     "soffit + edge band; formwork contact area"),
+    ("calc-slab-plaster", "area = plan_area x floors;  mortar = area x thk",
+     "ceiling plaster, 1:4, 12 mm default"),
 ]
 
 
@@ -2660,6 +2773,32 @@ def build_catalog():
     return out
 
 
+def auto_metrics(path):
+    """Numbers that can be read straight from a drawing, used to auto-fill
+    calculator forms so the user just presses Run. Geometry only -- spec
+    values (thickness, mix, rates, persons) are NOT in a DXF and stay as
+    defaults. Returns {} if the file can't be read."""
+    out = {}
+    try:
+        doc = load_dxf(path)
+        msp = doc.modelspace()
+    except SystemExit:
+        return out
+    except Exception:
+        return out
+    res = _largest_closed(doc, msp, None)
+    if res:
+        area, per = res
+        out["area"] = round(area, 2)
+        out["footprint"] = round(area, 2)
+        out["builtup"] = round(area, 2)
+        out["perimeter"] = round(per, 1)
+    seq = [f for f in FLOOR_ORDER if f in extract_levels(msp)]
+    if seq:
+        out["floors"] = len(seq)
+    return out
+
+
 def cmd_catalog(args):
     """Print the full tool catalog as JSON (used by the web UI)."""
     import json
@@ -2868,6 +3007,38 @@ def build_parser():
     sp.add_argument("--proj", type=float, required=True)
     sp.add_argument("--length", type=float, required=True)
     sp.add_argument("--tip", type=float, default=75)
+    sp.add_argument("--n", type=float, default=1)
+    sp.add_argument("--thk", type=float, default=12)
+
+    # --- Slab suite (slab = auto from drawing) ---
+    sp = add("slab", cmd_slab, "auto slab takeoff from the drawing")
+    file_arg(sp); sp.add_argument("--layer", help="slab/boundary layer (else footprint)")
+    sp.add_argument("--thk", type=float, default=150, help="slab thickness (mm)")
+    sp.add_argument("--steelrate", type=float, default=10, help="steel kg/m2")
+    sp.add_argument("--ptk", type=float, default=12, help="ceiling plaster thk (mm)")
+    sp.add_argument("--floors", type=int, help="override floor count")
+
+    sp = add("calc-slab", cmd_calc_slab, "slab concrete + steel (manual)")
+    sp.add_argument("--area", type=float, required=True)
+    sp.add_argument("--thk", type=float, default=150)
+    sp.add_argument("--n", type=float, default=1)
+    sp.add_argument("--steelrate", type=float, default=10)
+
+    sp = add("calc-slab-steel", cmd_calc_slab_steel, "slab reinforcement (kg/m2 or percent)")
+    sp.add_argument("--area", type=float, required=True)
+    sp.add_argument("--floors", type=float, default=1)
+    sp.add_argument("--rate", type=float, default=10)
+    sp.add_argument("--vol", type=float, default=0, help="concrete m3 for percent method")
+    sp.add_argument("--pct", type=float, default=0.9)
+
+    sp = add("calc-slab-shutter", cmd_calc_slab_shutter, "slab shuttering / formwork")
+    sp.add_argument("--area", type=float, required=True)
+    sp.add_argument("--perimeter", type=float, default=0)
+    sp.add_argument("--thk", type=float, default=150)
+    sp.add_argument("--n", type=float, default=1)
+
+    sp = add("calc-slab-plaster", cmd_calc_slab_plaster, "slab ceiling plaster + mortar")
+    sp.add_argument("--area", type=float, required=True)
     sp.add_argument("--n", type=float, default=1)
     sp.add_argument("--thk", type=float, default=12)
 

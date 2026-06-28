@@ -102,6 +102,17 @@ def catalog():
     return {"tools": ArchTools.build_catalog()}
 
 
+@app.get("/api/measure")
+def measure(building: str = ""):
+    """Geometry read straight from a building's DXF (area/perimeter/floors),
+    used to auto-fill calculator forms. Empty if the building/file is missing."""
+    proj = ArchTools.load_project(PROJECT)
+    entry = proj.get("buildings", {}).get(building)
+    if not entry:
+        return {"metrics": {}}
+    return {"metrics": ArchTools.auto_metrics(entry.get("dxf", ""))}
+
+
 class RunReq(BaseModel):
     command: str
     building: str = ""
