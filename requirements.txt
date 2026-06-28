@@ -1,0 +1,5 @@
+ezdxf
+fastapi
+uvicorn
+python-multipart
+xlrd

@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# PyInstaller build output (the .exe is built by CI / locally, not committed)
+build/
+dist/
+
+# Runtime data (user uploads + manifest live in Documents\ArchitectsCorner)
+uploads/
+logs/
+project.json
+
+# Confidential drawings / spreadsheets — never commit
+*.dxf
+*.dwg
+*.xls
+*.xlsx
+
+# Local assistant / session folders
+.claude/
+.remember/
+
+# Dead AI harness + internal dev notes (not part of the product)
+ask.py
+context.md
+
+# OS junk
+Thumbs.db
+desktop.ini
+.DS_Store
