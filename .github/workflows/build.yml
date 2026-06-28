@@ -1,0 +1,55 @@
+name: Build Windows EXE
+
+# Builds ArchitectsCorner.exe on a Windows runner.
+#   * push a version tag (e.g. v1.0)  -> builds + publishes a GitHub Release
+#   * manual run (Actions tab)        -> builds + uploads a downloadable artifact
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write          # needed to create the Release
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pyinstaller
+
+      - name: Build EXE
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --onefile --name ArchitectsCorner `
+            --add-data "web;web" --add-data "plugins;plugins" `
+            --collect-all ezdxf --collect-submodules uvicorn `
+            --hidden-import multipart --hidden-import multipart.multipart `
+            launch.py
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ArchitectsCorner-exe
+          path: dist/ArchitectsCorner.exe
+
+      - name: Publish Release (on tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ArchitectsCorner.exe
+          name: Architect's Corner ${{ github.ref_name }}
+          body: |
+            Download **ArchitectsCorner.exe** below and double-click to run.
+            Windows may warn "unknown publisher" -> More info -> Run anyway.
+            Your files are saved in Documents\ArchitectsCorner.
