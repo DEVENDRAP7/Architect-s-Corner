@@ -134,14 +134,17 @@ CATALOG = {
     "calc-chajja":       ("Chajja / Sunshade", "Chajja concrete + steel"),
     "calc-chajja-shutter": ("Chajja / Sunshade", "Chajja shuttering / formwork area"),
     "calc-chajja-plaster": ("Chajja / Sunshade", "Chajja plaster area + mortar"),
-    # Slab suite
+    # Concrete + Slab suite
+    "concrete":          ("Structure", "Total RCC concrete (auto from drawing)"),
     "slab":              ("Slab", "Auto slab takeoff (from drawing)"),
     "calc-slab":         ("Slab", "Slab concrete + steel"),
     "calc-slab-steel":   ("Slab", "Slab reinforcement (kg/m² or %)"),
     "calc-slab-shutter": ("Slab", "Slab shuttering / formwork"),
     "calc-slab-plaster": ("Slab", "Slab ceiling plaster + mortar"),
     "beams":       ("Structure", "Beams: count + length"),
-    "footings":    ("Structure", "Footings count"),
+    "footings":    ("Foundation", "Footings count"),
+    "foundation":  ("Foundation", "Foundation takeoff (auto from drawing)"),
+    "footing-schedule": ("Foundation", "Footing schedule (each F-tag)"),
     "staircases":  ("Structure", "Staircases + lifts"),
     "circles":     ("Structure", "Circles + radius stats"),
     "centroid":    ("Structure", "Centre point of a layer"),
@@ -165,8 +168,16 @@ CATALOG = {
     "wall-area":   ("Finishes & quantities", "Wall area (plaster/paint)"),
     "layer-length": ("Finishes & quantities", "Length on one layer (pipe/chajja)"),
     # Drawing QA
+    "qa-report":   ("Drawing QA", "Drawing health report (find errors)"),
+    "dxf-diff":    ("Drawing QA", "Compare two drawings / revisions"),
+    "attr-audit":  ("Drawing QA", "Block attribute + layer audit"),
     "findtext":    ("Drawing QA", "Find text on the drawing"),
     "entity-count": ("Drawing QA", "Count entities by type"),
+    # Openings extra counts
+    "parking":     ("Openings", "Count parking spaces"),
+    "sanitary":    ("Openings", "Count toilets / sanitary fixtures"),
+    # Areas
+    "area-statement": ("Areas", "Area statement (one tap)"),
     # Layer analysis (works across every layer)
     "layers":       ("Layer analysis", "Layers + entity counts"),
     "layer-report": ("Layer analysis", "Full breakdown of every layer"),
@@ -228,7 +239,15 @@ CATALOG = {
 # BOQ/spreadsheet tools are parked for now -- a proper quotation module comes
 # later. The CLI commands still exist; they're just hidden from the product.
 CATALOG_HIDE = {"project", "tools", "catalog", "dwghelp",
-                "xls", "xlsdump", "find", "compare"}
+                "xls", "xlsdump", "find", "compare",
+                # manual calculators superseded by auto drawing-takeoff tools
+                # (concrete / slab / chajja / plinth-beams already read the
+                # sizes from the drawing and output steel/shutter/plaster too)
+                "calc-concrete", "calc-rebar", "calc-steel",
+                "calc-slab", "calc-slab-steel", "calc-slab-shutter",
+                "calc-slab-plaster",
+                "calc-chajja", "calc-chajja-shutter", "calc-chajja-plaster",
+                "calc-plinth-beam"}
 
 
 # ======================================================================
@@ -1251,11 +1270,18 @@ def cmd_chajja(args):
     at = _avg_thk(args.root, args.tip)
     vol = lm * args.proj * at
     steel = vol * 7850 * args.steel / 100.0
+    front = lm * (args.tip / 1000.0)
+    shutter = lm * args.proj + front
+    plaster = 2 * args.proj * lm + front
+    mortar = plaster * 0.012
     print(f"Layer '{args.layer}': chajja run {lm:,.1f} m")
     print(f"Projection {args.proj} m | section {args.root}->{args.tip} mm "
           f"(avg {at*1000:.0f} mm)")
-    print(f"Concrete = {lm:,.1f} x {args.proj} x {at:.3f} = {vol:.2f} m3")
+    print(f"Concrete   = {lm:,.1f} x {args.proj} x {at:.3f} = {vol:.2f} m3")
     print(f"Steel ({args.steel}%) ~ {steel:,.0f} kg ({steel/1000:.3f} tonne)")
+    print(f"Shuttering = soffit + front edge = {shutter:,.1f} m2")
+    print(f"Plaster (top+bottom+drip) = {plaster:,.1f} m2; "
+          f"mortar @ 12mm = {mortar:.2f} m3")
 
 
 def cmd_calc_chajja(args):
@@ -1391,6 +1417,165 @@ def cmd_calc_slab_plaster(args):
     print(f"Mortar @ {args.thk:.0f} mm = {mortar:.3f} m3")
     print(f"Cement (1:4, ~5.5 bag/m3) ~ {mortar*5.5:.1f} bags; "
           f"sand ~ {mortar*1.1:.2f} m3")
+
+
+# ======================================================================
+# FOUNDATION SUITE  --  footing takeoff, auto from the drawing
+# ----------------------------------------------------------------------
+# Footings are tagged like columns: 'F1' + '1800x1800' text markers (and
+# often a footing schedule table). These tools read those markers and give
+# the whole foundation package -- concrete, excavation, PCC, backfill,
+# steel -- one tap. Depth/thickness are site decisions a plan doesn't
+# carry, so they are documented defaults, overridable in Advanced.
+# ======================================================================
+_FOOTPAT = re.compile(r"^(F\d{1,3})\s*\n\s*(\d{3,4})\s*[xX]\s*(\d{3,4})\s*$")
+
+
+def _footing_markers(msp, box=None):
+    """(x, y, tag, 'WxL') for every footing marker inside the box."""
+    def inbox(x, y):
+        return True if not box else (box[0] < x < box[2] and box[1] < y < box[3])
+    out = []
+    for s, x, y, _ in all_text_entities(msp):
+        if not inbox(x, y):
+            continue
+        m = _FOOTPAT.match(s)
+        if m:
+            out.append((x, y, m.group(1), f"{m.group(2)}x{m.group(3)}"))
+    return out
+
+
+def cmd_footing_schedule(args):
+    """Footing schedule read from the drawing's F1/F2... size markers:
+    every tag with its size, plus totals per size."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    box = _parse_box(getattr(args, "box", None))
+    marks = _footing_markers(msp, box)
+    if not marks:
+        print("No 'Fn / WxL' footing markers found. If footings are drawn "
+              "without F-tags, use 'footings --layer <name>' to count them.")
+        return
+    sched = {}
+    for x, y, tag, sz in marks:
+        sched[tag] = sz
+    rows = [[t, sched[t]] for t in sorted(sched, key=lambda x: int(x[1:]))]
+    print(fmt_table(rows, ["tag", "size (mm)"]))
+    by = Counter(m[3] for m in marks)
+    print()
+    print(fmt_table([[s, n] for s, n in by.most_common()],
+                    ["size (mm)", "markers"]))
+    print(f"\nDistinct footing tags: {len(sched)}   markers on plan: {len(marks)}")
+    print("(Markers can exceed tags if the sheet set is duplicated -- "
+          "set a box on the building to isolate one copy.)")
+
+
+def cmd_foundation(args):
+    """One-tap foundation takeoff from the drawing's footing markers:
+    concrete, excavation, PCC bed, backfill and steel per footing size.
+    Defaults (overridable): footing thk 450mm, depth 1.5m, PCC 100mm with
+    100mm offset, working space 300mm each side, steel 0.8%."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    box = _parse_box(getattr(args, "box", None))
+    marks = _footing_markers(msp, box)
+    if not marks:
+        print("No 'Fn / WxL' footing markers found in this drawing.")
+        print("Fallbacks: 'footings --layer <name>' to count shapes, then")
+        print("check the structural drawing for footing sizes.")
+        return
+    by = Counter(m[3] for m in marks)
+    thk = args.thk / 1000.0
+    ws = args.ws / 1000.0
+    off = 0.1  # PCC offset beyond footing edge (m)
+    pcc_t = args.pcc / 1000.0
+    D = args.depth
+
+    rows = []
+    conc = exc = pcc = 0.0
+    for sz, n in sorted(by.items(), key=lambda kv: -kv[1]):
+        w, l = (int(v) / 1000.0 for v in sz.lower().split("x"))
+        v_c = w * l * thk * n
+        v_p = (w + 2*off) * (l + 2*off) * pcc_t * n
+        v_e = (w + 2*ws) * (l + 2*ws) * D * n
+        conc += v_c; pcc += v_p; exc += v_e
+        rows.append([sz, n, f"{v_c:.2f}", f"{v_e:.1f}"])
+    steel = conc * 7850 * args.steel / 100.0
+    backfill = exc - conc - pcc
+    print(f"FOUNDATION TAKEOFF  (auto from drawing -- {len(by)} sizes, "
+          f"{sum(by.values())} footings)\n")
+    print(fmt_table(rows, ["size (mm)", "nos", "concrete m3", "excavation m3"]))
+    print(f"\nFooting concrete ({args.thk:.0f} mm thick) : {conc:,.2f} m3")
+    print(f"Steel ({args.steel}%)                : {steel:,.0f} kg "
+          f"({steel/1000:.2f} t)")
+    print(f"PCC bed ({args.pcc:.0f} mm, +100 offset): {pcc:,.2f} m3 "
+          f"(~{pcc*3.4:.0f} cement bags, 1:4:8)")
+    print(f"Excavation (depth {D} m, +{args.ws:.0f} mm working space): "
+          f"{exc:,.1f} m3")
+    print(f"Backfill (excavation - footing - PCC): {backfill:,.1f} m3")
+    print("\nNote: if counts look 2-3x high the sheet set is duplicated --")
+    print("set the building's box once to isolate one copy.")
+    print("Footing thickness/depth are site values (not in the plan) -- "
+          "defaults shown, change in Advanced.")
+
+
+def cmd_concrete(args):
+    """Total RCC concrete read straight from the drawing -- columns (per
+    storey) + floor slabs -- in one click, nothing typed. Reads the level
+    marks and column grid itself. Optional --box (isolate one sheet),
+    --layer (slab boundary), --thk (slab mm)."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    levels = (parse_levels(args.levels) if getattr(args, "levels", None)
+              else (extract_levels(msp) or dict(DEFAULT_LEVELS)))
+    seq = [f for f in FLOOR_ORDER if f in levels]
+    heights = {seq[i]: levels[seq[i + 1]] - levels[seq[i]]
+               for i in range(len(seq) - 1)}
+    box = _parse_box(getattr(args, "box", None))
+    markers, titles = _markers_titles(msp, box)
+    floor = defaultdict(Counter)
+    for x, y, tag, sz in markers:
+        nm = _floor_of(x, y, titles) if titles else (seq[0] if seq else "GROUND")
+        floor[nm][sz] += 1
+    col = 0.0
+    by_size, counts = Counter(), Counter()
+    for nm in FLOOR_ORDER[:-1]:
+        h = heights.get(nm)
+        if h is None or nm not in floor:
+            continue
+        for sz, n in floor[nm].items():
+            v = n * _area(sz) * h
+            col += v
+            by_size[sz] += v
+            counts[sz] += n
+    res = _largest_closed(doc, msp, args.layer)
+    nfloors = len(seq) or 1
+    area, slab = 0.0, 0.0
+    if res:
+        area, _ = res
+        slab = area * (args.thk / 1000.0) * nfloors
+    total = col + slab
+
+    print("CONCRETE  (auto from drawing -- sizes & heights read from the drawing)\n")
+    if by_size:
+        print("COLUMN SECTIONS (read from the drawing)")
+        rows = [[sz, counts[sz], f"{by_size[sz]:.2f}"]
+                for sz in sorted(by_size, key=lambda s: -_area(s))]
+        print(fmt_table(rows, ["section (mm)", "count", "concrete m3"]))
+        hh = [f"{seq[i]}->{seq[i+1]} {heights[seq[i]]:.1f}m"
+              for i in range(len(seq) - 1)]
+        if hh:
+            print("Storey heights: " + ", ".join(hh))
+        print()
+    print("SUMMARY")
+    print(fmt_table([["Columns (superstructure)", f"{col:.2f}"],
+                     ["Floor slabs", f"{slab:.2f}"]],
+                    ["item", "concrete m3"]))
+    print(f"\nTotal RCC concrete: {total:.2f} m3")
+    if area:
+        print(f"(slab: {area:,.0f} m2 x {args.thk:.0f} mm x {nfloors} floors)")
+    print("Sections & storey heights are taken from the drawing -- nothing typed.")
+    print("Footings / plinth / chajja: use colvol, slab, plinth-colvol, footings, chajja.")
 
 
 def cmd_colschedule(args):
@@ -1860,6 +2045,276 @@ def _hatch_area(e):
     except Exception:
         pass
     return area
+
+
+# ======================================================================
+# DRAWING QA / HEALTH SUITE  --  one-tap error finding (read-only)
+# ----------------------------------------------------------------------
+# Finds the things architects hunt by zooming around for hours: duplicate
+# lines, stray fragments, overlapping text, duplicate dimensions, unclosed
+# boundaries, blocks on wrong layers, empty layers. NOTHING is modified --
+# these tools only report, so the drawing is never at risk.
+# ======================================================================
+def cmd_qa_report(args):
+    """One-tap drawing health report: duplicate lines, stray fragments,
+    text overlaps, duplicate dimensions, unclosed polylines, blocks on
+    layer 0, empty layers. Read-only -- nothing in the drawing changes."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+
+    lines = {}
+    dup_lines = 0
+    stray = 0
+    unclosed = 0
+    zero_blk = 0
+    texts = []
+    dims = {}
+    dup_dims = 0
+    counts = Counter()
+    for e in msp:
+        t = e.dxftype()
+        counts[t] += 1
+        if t == "LINE":
+            a, b = e.dxf.start, e.dxf.end
+            L = math.dist((a.x, a.y), (b.x, b.y))
+            if L < 10:  # under 10 drawing units (~1cm) = stray fragment
+                stray += 1
+            key = tuple(sorted([(round(a.x, 1), round(a.y, 1)),
+                                (round(b.x, 1), round(b.y, 1))]))
+            if key in lines:
+                dup_lines += 1
+            lines[key] = 1
+        elif t == "LWPOLYLINE":
+            pts = [(p[0], p[1]) for p in e.get_points()]
+            if not e.closed and len(pts) >= 3:
+                # start & end nearly touch -> meant to be closed
+                if math.dist(pts[0], pts[-1]) < 50:
+                    unclosed += 1
+        elif t in ("TEXT", "MTEXT"):
+            s = entity_text(e) or ""
+            p = e.dxf.insert
+            h = float(getattr(e.dxf, "height", 0) or
+                      getattr(e.dxf, "char_height", 0) or 250)
+            texts.append((p.x, p.y, h, s))
+        elif t == "DIMENSION":
+            try:
+                d = e.dxf.defpoint
+                key = (round(d.x, 0), round(d.y, 0))
+                if key in dims:
+                    dup_dims += 1
+                dims[key] = 1
+            except Exception:
+                pass
+        elif t == "INSERT" and (e.dxf.layer or "") in ("0", ""):
+            zero_blk += 1
+
+    # text overlaps via spatial bucketing (avoid O(n^2) on big drawings)
+    buckets = defaultdict(list)
+    overlaps = 0
+    samples = []
+    for x, y, h, s in texts:
+        k = (int(x // 1000), int(y // 1000))
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                for ox, oy, oh, os_ in buckets.get((k[0]+dx, k[1]+dy), []):
+                    if abs(x-ox) < max(h, oh)*1.2 and abs(y-oy) < max(h, oh)*0.9:
+                        overlaps += 1
+                        if len(samples) < 5 and s.strip() and os_.strip():
+                            samples.append(f"'{s.strip()[:24]}' / '{os_.strip()[:24]}'")
+                        break
+        buckets[k].append((x, y, h, s))
+
+    ec = Counter((e.dxf.layer or "") for e in msp)
+    empty = [l.dxf.name for l in doc.layers
+             if ec.get(l.dxf.name, 0) == 0 and l.dxf.name not in ("0", "Defpoints")]
+
+    issues = [
+        ["Duplicate lines (same start/end)", dup_lines],
+        ["Stray fragments (lines < 10 units)", stray],
+        ["Nearly-closed polylines (gap < 50)", unclosed],
+        ["Overlapping text pairs", overlaps],
+        ["Duplicate dimensions", dup_dims],
+        ["Blocks on layer 0", zero_blk],
+        ["Empty layers", len(empty)],
+    ]
+    total = sum(n for _, n in issues)
+    print("DRAWING HEALTH REPORT  (read-only -- nothing was changed)\n")
+    print(fmt_table([[k, v] for k, v in issues], ["check", "found"]))
+    if samples:
+        print("\nText overlap samples:")
+        for s in samples:
+            print("  " + s)
+    if empty:
+        print("\nEmpty layers: " + ", ".join(empty[:15])
+              + (" ..." if len(empty) > 15 else ""))
+    print(f"\nEntities scanned: {sum(counts.values()):,}   "
+          f"Issues found: {total}")
+    print("Verdict: " + ("CLEAN — no obvious drawing errors." if total == 0
+          else "Attention — review the counts above in AutoCAD."))
+
+
+def cmd_dxf_diff(args):
+    """Compare two drawings / revisions: what was added, removed or changed.
+    Give two buildings (--building A --other B) or two file paths. Reports
+    per-layer entity changes, text added/removed, and block count changes."""
+    other = args.other
+    proj = load_project()
+    ob = proj.get("buildings", {}).get(other)
+    path_b = ob["dxf"] if ob else other
+    doc_a, doc_b = load_dxf(args.file), load_dxf(path_b)
+    msp_a, msp_b = doc_a.modelspace(), doc_b.modelspace()
+
+    def stats(msp):
+        lay = Counter((e.dxf.layer or "") for e in msp)
+        blk = Counter(e.dxf.name for e in msp if e.dxftype() == "INSERT")
+        txt = Counter((entity_text(e) or "").strip() for e in msp
+                      if e.dxftype() in ("TEXT", "MTEXT"))
+        txt.pop("", None)
+        return lay, blk, txt
+
+    la, ba, ta = stats(msp_a)
+    lb, bb, tb = stats(msp_b)
+
+    rows = []
+    for lay in sorted(set(la) | set(lb)):
+        d = lb.get(lay, 0) - la.get(lay, 0)
+        if d:
+            rows.append([lay[:38], la.get(lay, 0), lb.get(lay, 0),
+                         f"{d:+d}"])
+    print("REVISION COMPARE   A = current building, B = other\n")
+    if rows:
+        print("LAYER CHANGES (entity counts)")
+        print(fmt_table(rows, ["layer", "A", "B", "change"]))
+    else:
+        print("No per-layer entity count changes.")
+    brows = [[nm[:38], ba.get(nm, 0), bb.get(nm, 0),
+              f"{bb.get(nm,0)-ba.get(nm,0):+d}"]
+             for nm in sorted(set(ba) | set(bb))
+             if ba.get(nm, 0) != bb.get(nm, 0)]
+    if brows:
+        print("\nBLOCK CHANGES (doors/equipment moved-in/out show here)")
+        print(fmt_table(brows, ["block", "A", "B", "change"]))
+    added = [s for s in tb if s not in ta][:15]
+    removed = [s for s in ta if s not in tb][:15]
+    if added:
+        print("\nTEXT ADDED in B: " + "; ".join(s[:30] for s in added))
+    if removed:
+        print("TEXT REMOVED in B: " + "; ".join(s[:30] for s in removed))
+    if not (rows or brows or added or removed):
+        print("\nDrawings look identical by these measures.")
+
+
+def cmd_attr_audit(args):
+    """Block attribute audit: blocks whose attributes are missing or empty,
+    plus blocks placed on layer 0 (usually wrong). Read-only."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    missing = Counter()
+    empty_att = Counter()
+    zero_layer = Counter()
+    total = 0
+    # which block definitions declare attributes
+    has_attdef = set()
+    for b in doc.blocks:
+        for e in b:
+            if e.dxftype() == "ATTDEF":
+                has_attdef.add(b.name)
+                break
+    for e in msp:
+        if e.dxftype() != "INSERT":
+            continue
+        total += 1
+        nm = e.dxf.name or "?"
+        attribs = list(getattr(e, "attribs", []) or [])
+        if nm in has_attdef and not attribs:
+            missing[nm] += 1
+        for a in attribs:
+            if not (a.dxf.text or "").strip():
+                empty_att[nm] += 1
+        if (e.dxf.layer or "") in ("0", ""):
+            zero_layer[nm] += 1
+    print(f"BLOCK ATTRIBUTE AUDIT   ({total} block inserts scanned)\n")
+    if missing:
+        print("Blocks missing their attributes:")
+        print(fmt_table([[n, c] for n, c in missing.most_common(15)],
+                        ["block", "count"]))
+    if empty_att:
+        print("\nBlocks with EMPTY attribute values:")
+        print(fmt_table([[n, c] for n, c in empty_att.most_common(15)],
+                        ["block", "empty values"]))
+    if zero_layer:
+        print("\nBlocks on layer 0 (probably wrong layer):")
+        print(fmt_table([[n, c] for n, c in zero_layer.most_common(15)],
+                        ["block", "count"]))
+    if not (missing or empty_att or zero_layer):
+        print("CLEAN — every block has filled attributes and a proper layer.")
+
+
+def cmd_parking(args):
+    """Count parking spaces from their blocks (names matching park/car/ecs,
+    or --name PATTERN)."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    pat = re.compile(args.name or r"park|car|ecs|two.?wheel", re.I)
+    c = Counter(e.dxf.name for e in msp
+                if e.dxftype() == "INSERT" and pat.search(e.dxf.name or ""))
+    if not c:
+        print("No parking blocks found. Use 'blocks' to see names, then --name.")
+        return
+    for nm, n in c.most_common():
+        print(f"  {nm}: {n}")
+    print(f"Total parking spaces: {sum(c.values())}")
+
+
+def cmd_sanitary(args):
+    """Count toilets / sanitary fixtures from their blocks (wc/toilet/
+    urinal/basin/sink, or --name PATTERN)."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    pat = re.compile(args.name or r"wc|toilet|urinal|basin|sink|sanit|ewc|wash",
+                     re.I)
+    c = Counter(e.dxf.name for e in msp
+                if e.dxftype() == "INSERT" and pat.search(e.dxf.name or ""))
+    if not c:
+        print("No sanitary blocks found. Use 'blocks' to see names, then --name.")
+        return
+    for nm, n in c.most_common():
+        print(f"  {nm}: {n}")
+    print(f"Total sanitary fixtures: {sum(c.values())}")
+
+
+def cmd_area_statement(args):
+    """One-tap area statement: built-up footprint + perimeter + closed areas
+    per layer -- the numbers an area statement needs, straight off the plan."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    res = _largest_closed(doc, msp, args.layer)
+    print("AREA STATEMENT  (auto from drawing)\n")
+    if res:
+        area, per = res
+        print(f"Built-up footprint : {area:,.2f} m2")
+        print(f"Perimeter          : {per:,.1f} m")
+    lv = extract_levels(msp)
+    seq = [f for f in FLOOR_ORDER if f in lv]
+    if seq and res:
+        print(f"Floors (from levels): {len(seq)}  ({', '.join(seq)})")
+        print(f"Total built-up (footprint x floors): {res[0]*len(seq):,.2f} m2")
+    per_layer = defaultdict(float)
+    for e in msp:
+        if e.dxftype() == "LWPOLYLINE" and e.closed:
+            try:
+                a = abs(e.get_area()) / 1e6
+            except Exception:
+                a = _poly_area(e) / 1e6
+            if 1 <= a <= 100000:
+                per_layer[e.dxf.layer or ""] += a
+    rows = sorted(per_layer.items(), key=lambda kv: -kv[1])[:12]
+    if rows:
+        print("\nCLOSED AREAS PER LAYER (rooms/zones live on their layers)")
+        print(fmt_table([[l[:38], f"{a:,.1f}"] for l, a in rows],
+                        ["layer", "area m2"]))
+    print("\nTip (optional): choose a room-boundary layer in Advanced for an")
+    print("exact room-by-room table (the 'room-areas' tool).")
 
 
 def cmd_layer_report(args):
@@ -2381,6 +2836,12 @@ FORMULAS = [
      "formwork contact area; back against wall & top finished are excluded"),
     ("calc-chajja-plaster", "area = (2 x proj x length + drip) x N;  mortar = area x thk",
      "top + bottom faces + front drip; 1:4 plaster, 12 mm default"),
+    ("foundation", "per size: conc = WxLxthk x n; exc = (W+2ws)(L+2ws)xD x n; "
+     "PCC = (W+.2)(L+.2)x0.1 x n; backfill = exc - conc - PCC",
+     "footing sizes read from the drawing's F-tags; thk 450mm, depth 1.5m, "
+     "working space 300mm, steel 0.8% -- site defaults, overridable"),
+    ("concrete", "auto total = column storey concrete + slab(area x thk x floors)",
+     "columns from the grid markers + levels; slab from footprint; one click, nothing typed"),
     ("slab", "auto: conc = area x thk x floors;  steel = area x floors x kg/m2",
      "area = footprint or --layer; floors counted from the drawing's level marks; thk 150mm, steel 10 kg/m2 default"),
     ("calc-slab", "conc = area x thk x floors;  steel = area x floors x kg/m2",
@@ -3010,6 +3471,27 @@ def build_parser():
     sp.add_argument("--n", type=float, default=1)
     sp.add_argument("--thk", type=float, default=12)
 
+    # --- Foundation suite ---
+    sp = add("foundation", cmd_foundation, "foundation takeoff (auto from drawing)")
+    file_arg(sp)
+    sp.add_argument("--box", help="x0,y0,x1,y1 to isolate one sheet copy")
+    sp.add_argument("--thk", type=float, default=450, help="footing thickness (mm)")
+    sp.add_argument("--depth", type=float, default=1.5, help="foundation depth (m)")
+    sp.add_argument("--pcc", type=float, default=100, help="PCC bed thickness (mm)")
+    sp.add_argument("--ws", type=float, default=300, help="working space each side (mm)")
+    sp.add_argument("--steel", type=float, default=0.8, help="steel percent")
+
+    sp = add("footing-schedule", cmd_footing_schedule, "footing schedule (each F-tag)")
+    file_arg(sp)
+    sp.add_argument("--box", help="x0,y0,x1,y1 to isolate one sheet copy")
+
+    sp = add("concrete", cmd_concrete, "total RCC concrete (auto from drawing)")
+    file_arg(sp)
+    sp.add_argument("--box", help="x0,y0,x1,y1 to isolate one sheet copy")
+    sp.add_argument("--layer", help="slab boundary layer (else footprint)")
+    sp.add_argument("--thk", type=float, default=150, help="slab thickness (mm)")
+    sp.add_argument("--levels", help="FLOOR:elev,... override (metres)")
+
     # --- Slab suite (slab = auto from drawing) ---
     sp = add("slab", cmd_slab, "auto slab takeoff from the drawing")
     file_arg(sp); sp.add_argument("--layer", help="slab/boundary layer (else footprint)")
@@ -3102,6 +3584,27 @@ def build_parser():
     sp = add("fixtures", cmd_fixtures, "count fixtures (blocks) on a layer")
     file_arg(sp); sp.add_argument("--layer", help="layer name")
     sp.add_argument("--name", help="block-name pattern")
+
+    # --- Drawing QA / health suite (read-only) ---
+    sp = add("qa-report", cmd_qa_report, "one-tap drawing health / error report")
+    file_arg(sp)
+
+    sp = add("dxf-diff", cmd_dxf_diff, "compare two drawings / revisions")
+    file_arg(sp)
+    sp.add_argument("--other", required=True,
+                    help="other building name (or .dxf path) to compare with")
+
+    sp = add("attr-audit", cmd_attr_audit, "block attribute + wrong-layer audit")
+    file_arg(sp)
+
+    sp = add("parking", cmd_parking, "count parking spaces")
+    file_arg(sp); sp.add_argument("--name", help="block-name pattern")
+
+    sp = add("sanitary", cmd_sanitary, "count toilets / sanitary fixtures")
+    file_arg(sp); sp.add_argument("--name", help="block-name pattern")
+
+    sp = add("area-statement", cmd_area_statement, "one-tap area statement")
+    file_arg(sp); sp.add_argument("--layer", help="boundary layer (cleaner)")
 
     # --- all-layer analysis ---
     sp = add("layer-report", cmd_layer_report, "full breakdown of EVERY layer")
