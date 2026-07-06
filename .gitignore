@@ -23,6 +23,9 @@ project.json
 .claude/
 .remember/
 
+# Landing-site runtime data (analytics counters, regenerated sample)
+site/site_stats.json
+
 # Dead AI harness + internal dev notes (not part of the product)
 ask.py
 context.md
