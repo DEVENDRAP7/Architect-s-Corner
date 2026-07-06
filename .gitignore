@@ -26,6 +26,7 @@ project.json
 # Landing-site runtime data (analytics counters, regenerated sample)
 site/site_stats.json
 site/site_messages.json
+site/site_admin.json
 
 # Dead AI harness + internal dev notes (not part of the product)
 ask.py

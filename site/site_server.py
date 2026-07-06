@@ -191,6 +191,59 @@ def stats():
 
 
 MSG_FILE = os.path.join(HERE, "site_messages.json")
+ADMIN_FILE = os.path.join(HERE, "site_admin.json")
+OWNER_EMAIL = "devendranprajapati07@gmail.com"
+
+
+def _admin_key():
+    """Stable secret admin key, generated once and kept out of git."""
+    if os.path.isfile(ADMIN_FILE):
+        with open(ADMIN_FILE, encoding="utf-8") as f:
+            return json.load(f)["key"]
+    import secrets
+    key = secrets.token_urlsafe(18)
+    with open(ADMIN_FILE, "w", encoding="utf-8") as f:
+        json.dump({"key": key}, f)
+    return key
+
+
+ADMIN_KEY = _admin_key()
+print(f"ADMIN dashboard -> http://127.0.0.1:8080/admin?key={ADMIN_KEY}")
+
+
+def _messages():
+    if os.path.isfile(MSG_FILE):
+        with open(MSG_FILE, encoding="utf-8") as f:
+            return json.load(f)
+    return []
+
+
+def _notify_email(entry):
+    """Email the owner about a new message. Activates when SMTP creds are
+    set (Gmail: 2FA + app password):
+        set AC_SMTP_USER=you@gmail.com
+        set AC_SMTP_PASS=<16-char app password>
+    Silent no-op otherwise -- the message is stored regardless."""
+    user = os.environ.get("AC_SMTP_USER")
+    pw = os.environ.get("AC_SMTP_PASS")
+    if not (user and pw):
+        return
+    try:
+        import smtplib
+        from email.mime.text import MIMEText
+        body = (f"New message on the Architect's Corner site\n\n"
+                f"Time   : {entry['time']}\n"
+                f"Name   : {entry['name']}\n"
+                f"Email  : {entry['email']}\n\n{entry['message']}")
+        m = MIMEText(body, _charset="utf-8")
+        m["Subject"] = f"[Architect's Corner] message from {entry['name']}"
+        m["From"] = user
+        m["To"] = OWNER_EMAIL
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=15) as s:
+            s.login(user, pw)
+            s.send_message(m)
+    except Exception:
+        pass  # never lose the message over a mail hiccup
 
 
 class Contact(BaseModel):
@@ -211,14 +264,85 @@ def contact(c: Contact):
         "message": c.message.strip()[:4000],
     }
     with LOCK:
-        msgs = []
-        if os.path.isfile(MSG_FILE):
-            with open(MSG_FILE, encoding="utf-8") as f:
-                msgs = json.load(f)
+        msgs = _messages()
         msgs.append(entry)
         with open(MSG_FILE, "w", encoding="utf-8") as f:
             json.dump(msgs, f, indent=1, ensure_ascii=False)
+    threading.Thread(target=_notify_email, args=(entry,), daemon=True).start()
     return {"ok": True, "received": entry["time"]}
+
+
+# ----------------------------------------------------------------------
+# owner dashboard -- messages + stats + CSV export (key-protected)
+# ----------------------------------------------------------------------
+def _esc(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace('"', "&quot;"))
+
+
+@app.get("/admin")
+def admin(key: str = ""):
+    if key != ADMIN_KEY:
+        return JSONResponse({"error": "wrong key"}, status_code=403)
+    with LOCK:
+        s = dict(STATS)
+        msgs = list(reversed(_messages()))
+    days = sorted(s.get("days", {}).items(), reverse=True)[:14]
+    rows = "".join(
+        f"<tr><td>{_esc(m['time'])}</td><td>{_esc(m['name'])}</td>"
+        f"<td><a href='mailto:{_esc(m['email'])}'>{_esc(m['email'])}</a></td>"
+        f"<td>{_esc(m['message'])}</td></tr>" for m in msgs) or \
+        "<tr><td colspan=4>(no messages yet)</td></tr>"
+    dayrows = "".join(f"<tr><td>{d}</td><td>{n}</td></tr>" for d, n in days)
+    html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>AC — owner dashboard</title><style>
+body{{font-family:system-ui;background:#0d0e11;color:#edece7;margin:0;padding:34px;font-size:14px}}
+h1{{font-size:18px}} h2{{font-size:13px;text-transform:uppercase;letter-spacing:.1em;color:#8f9097;margin-top:34px}}
+.grid{{display:flex;gap:12px;flex-wrap:wrap}}
+.card{{background:#131418;border:1px solid #26272d;border-radius:10px;padding:16px 20px;min-width:130px}}
+.card b{{font-size:26px;font-family:ui-monospace,monospace;display:block}}
+.card i{{font-style:normal;font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:#5c5d65}}
+table{{border-collapse:collapse;width:100%;margin-top:10px;background:#131418;border:1px solid #26272d;border-radius:8px}}
+th,td{{padding:8px 12px;border-bottom:1px solid #26272d;text-align:left;vertical-align:top;font-size:13px}}
+th{{color:#8f9097;font-size:10.5px;text-transform:uppercase;letter-spacing:.1em}}
+td:last-child{{white-space:pre-wrap;max-width:520px}}
+a{{color:#e8ae3f}} .btn{{display:inline-block;margin-top:10px;border:1px solid #e8ae3f;color:#e8ae3f;
+border-radius:7px;padding:7px 16px;text-decoration:none;font-size:13px}}</style></head><body>
+<h1>Architect's Corner — owner dashboard</h1>
+<div class="grid">
+<div class="card"><b>{_active_count()}</b><i>watching now</i></div>
+<div class="card"><b>{s.get('days', {}).get(_today(), 0)}</b><i>visits today</i></div>
+<div class="card"><b>{s['total']}</b><i>total visits</i></div>
+<div class="card"><b>{s['unique']}</b><i>unique visitors</i></div>
+<div class="card"><b>{s.get('peak', 0)}</b><i>peak concurrent</i></div>
+<div class="card"><b>{s.get('demo_runs', 0)}</b><i>demo runs</i></div>
+<div class="card"><b>{len(msgs)}</b><i>messages</i></div>
+</div>
+<h2>Messages</h2>
+<a class="btn" href="/admin/export?key={ADMIN_KEY}">⬇ Download CSV</a>
+<table><tr><th>time</th><th>name</th><th>email</th><th>message</th></tr>{rows}</table>
+<h2>Visits — last 14 days</h2>
+<table><tr><th>date</th><th>visits</th></tr>{dayrows}</table>
+</body></html>"""
+    from fastapi.responses import HTMLResponse
+    return HTMLResponse(html)
+
+
+@app.get("/admin/export")
+def admin_export(key: str = ""):
+    if key != ADMIN_KEY:
+        return JSONResponse({"error": "wrong key"}, status_code=403)
+    import csv
+    import io
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["time", "name", "email", "message"])
+    for m in _messages():
+        w.writerow([m["time"], m["name"], m["email"], m["message"]])
+    from fastapi.responses import Response
+    return Response(buf.getvalue(), media_type="text/csv",
+                    headers={"Content-Disposition":
+                             "attachment; filename=messages.csv"})
 
 
 class Demo(BaseModel):
