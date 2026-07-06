@@ -252,6 +252,24 @@
   @media(max-width:900px){.ls-grid{grid-template-columns:repeat(3,1fr)}}
   @media(max-width:560px){.ls-grid{grid-template-columns:repeat(2,1fr)}}
 
+  /* contact form */
+  .contact-form{max-width:640px}
+  .cf-row{display:flex;gap:14px}
+  .cf-row .cf-field{flex:1}
+  .cf-field{margin-bottom:16px}
+  .cf-field label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.14em;
+      color:var(--muted);margin-bottom:7px;font-family:"JetBrains Mono",monospace}
+  .cf-field input,.cf-field textarea{width:100%;padding:12px 14px;border:1px solid var(--line-2);
+      border-radius:9px;background:var(--surface);color:var(--ink);font:inherit;font-size:14.5px;
+      transition:.15s var(--ease);resize:vertical}
+  .cf-field input::placeholder,.cf-field textarea::placeholder{color:var(--faint)}
+  .cf-field input:focus,.cf-field textarea:focus{outline:none;border-color:var(--amber);
+      box-shadow:0 0 0 3px var(--amber-soft)}
+  .cf-alt{margin-left:16px;font-size:11.5px;color:var(--faint)}
+  .cf-alt a{color:var(--muted);text-decoration:underline}
+  .cf-done{margin-top:14px;color:var(--good);font-size:12.5px}
+  @media(max-width:560px){.cf-row{flex-direction:column;gap:0}}
+
   footer{border-top:1px solid var(--line);padding:44px 0 60px;color:var(--faint);font-size:13px}
   footer .wrap{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap;align-items:center}
   footer .mono{font-size:11px}
@@ -284,6 +302,7 @@
     <a class="lnk" href="#features">Features</a>
     <a class="lnk" href="#pricing">Pricing</a>
     <a class="lnk" href="#faq">FAQ</a>
+    <a class="lnk" href="#contact">Contact</a>
     <a class="btn gold" href="#pricing">Get the toolkit</a>
   </div>
 </nav>
@@ -507,6 +526,28 @@ The output you'll see is computed live.</div>
   </div>
 </section>
 
+<section id="contact" style="padding-top:20px">
+  <div class="wrap">
+    <div class="kicker rev">contact</div>
+    <h2 class="sec-h rev">Talk to the <em>builders.</em></h2>
+    <p class="sec-p rev">Questions, feedback, a drawing convention we should support,
+      or early access — write to us. Every message lands directly with us, not a helpdesk.</p>
+    <form class="contact-form rev" id="contactForm">
+      <div class="cf-row">
+        <div class="cf-field"><label>Your name</label>
+          <input type="text" id="cfName" placeholder="Ar. Priya Sharma" required></div>
+        <div class="cf-field"><label>Email</label>
+          <input type="email" id="cfEmail" placeholder="you@studio.com" required></div>
+      </div>
+      <div class="cf-field"><label>Message</label>
+        <textarea id="cfMsg" rows="5" placeholder="I estimate industrial sheds and…" required></textarea></div>
+      <button class="btn gold" type="submit" id="cfSend">Send message →</button>
+      <span class="cf-alt mono">or email <a href="mailto:devendranprajapati07@gmail.com">devendranprajapati07@gmail.com</a></span>
+      <div class="cf-done mono" id="cfDone" style="display:none">✓ Received — we read every message. Thank you.</div>
+    </form>
+  </div>
+</section>
+
 <footer>
   <div class="wrap">
     <div><b style="font-size:13px;letter-spacing:.14em;text-transform:uppercase">Architect's <em style="font-style:normal;color:var(--amber)">Corner</em></b>
@@ -642,6 +683,22 @@ $("#simBtn").addEventListener("click",async()=>{
     out.textContent="Demo needs the site backend running:\n\n  python site_server.py\n\nthen open http://127.0.0.1:8080";
   }
   btn.disabled=false;btn.textContent="▶ Simulate on the sample drawing";
+});
+
+/* contact form -> backend; falls back to mailto if no server */
+$("#contactForm").addEventListener("submit",async e=>{
+  e.preventDefault();
+  const btn=$("#cfSend"),name=$("#cfName").value,email=$("#cfEmail").value,msg=$("#cfMsg").value;
+  btn.disabled=true;btn.textContent="Sending…";
+  try{
+    await api("/api/contact",{name,email,message:msg});
+    $("#cfDone").style.display="block";
+    $("#cfName").value="";$("#cfEmail").value="";$("#cfMsg").value="";
+  }catch(err){
+    location.href="mailto:devendranprajapati07@gmail.com?subject="+
+      encodeURIComponent("Architect's Corner — "+name)+"&body="+encodeURIComponent(msg);
+  }
+  btn.disabled=false;btn.textContent="Send message →";
 });
 
 /* buy button — placeholder until checkout is wired (Gumroad/Lemon Squeezy) */

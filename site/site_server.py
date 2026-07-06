@@ -190,6 +190,37 @@ def stats():
         }
 
 
+MSG_FILE = os.path.join(HERE, "site_messages.json")
+
+
+class Contact(BaseModel):
+    name: str
+    email: str
+    message: str
+
+
+@app.post("/api/contact")
+def contact(c: Contact):
+    """Store a contact-form message (name/email/message + timestamp)."""
+    if not c.message.strip():
+        return JSONResponse({"error": "empty message"}, status_code=400)
+    entry = {
+        "time": datetime.datetime.now().isoformat(timespec="seconds"),
+        "name": c.name.strip()[:120],
+        "email": c.email.strip()[:200],
+        "message": c.message.strip()[:4000],
+    }
+    with LOCK:
+        msgs = []
+        if os.path.isfile(MSG_FILE):
+            with open(MSG_FILE, encoding="utf-8") as f:
+                msgs = json.load(f)
+        msgs.append(entry)
+        with open(MSG_FILE, "w", encoding="utf-8") as f:
+            json.dump(msgs, f, indent=1, ensure_ascii=False)
+    return {"ok": True, "received": entry["time"]}
+
+
 class Demo(BaseModel):
     tool: str
 
