@@ -27,6 +27,7 @@ project.json
 site/site_stats.json
 site/site_messages.json
 site/site_admin.json
+site/OWNER-GUIDE.md
 
 # Dead AI harness + internal dev notes (not part of the product)
 ask.py
