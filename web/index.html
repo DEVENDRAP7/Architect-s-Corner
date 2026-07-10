@@ -574,6 +574,20 @@ let CMDSET=new Set();
 let LAYER_CACHE={}, METRICS_CACHE={};
 const METRIC_MAP={"--area":"area","--footprint":"footprint","--builtup":"builtup",
                   "--perimeter":"perimeter","--floors":"floors"};
+/* per-tool: same flag name means different things in different tools */
+const TOOL_METRIC={
+  "calc-stair":{"--height":"floor_height"},
+  "calc-ramp":{"--height":"plinth_height"},
+  "calc-plinth-masonry":{"--height":"plinth_height"},
+  "calc-plinth-fill":{"--depth":"plinth_height"},
+  "calc-ach":{"--height":"floor_height"},
+  "wall-area":{"--height":"floor_height"},
+  "calc-exit-width":{"--occupants":"occupants"},
+  "calc-water-demand":{"--persons":"occupants"},
+};
+function metricFor(tool,param){
+  return (TOOL_METRIC[tool]&&TOOL_METRIC[tool][param])||METRIC_MAP[param]||null;
+}
 const PRESETS={
   "--steel":["0.8","1.0","1.5","2.0","2.5","3.0"],
   "--pct":["0.8","1.0","1.5","2.0","2.5","3.0"],
@@ -743,7 +757,7 @@ function pick(cmd){
   (t.params||[]).forEach(p=>{
     const id="p_"+p.name.replace(/[^a-z0-9]/gi,"");
     const fh=fieldHtml(p,dxfTool,id);
-    const optional=(p.name in METRIC_MAP) || !p.required || p.type==="flag";
+    const optional=!!metricFor(t.command,p.name) || !p.required || p.type==="flag";
     if(optional) adv+=fh; else ess+=fh;
   });
   let html=`<div class="frow">${bld}${ess}</div>`;
@@ -875,11 +889,11 @@ async function getMetrics(b){
 async function autofillForm(){
   $$(".autobar").forEach(e=>e.remove());
   if(!CURRENT||!ACTIVE_B)return;
-  const fields=$$('#rFields [data-p]').filter(f=>f.dataset.p in METRIC_MAP && f.tagName!=="SELECT");
+  const fields=$$('#rFields [data-p]').filter(f=>metricFor(CURRENT.command,f.dataset.p) && f.tagName!=="SELECT");
   if(!fields.length)return;
   const m=await getMetrics(ACTIVE_B);
   let any=false;
-  fields.forEach(f=>{const v=m[METRIC_MAP[f.dataset.p]];
+  fields.forEach(f=>{const v=m[metricFor(CURRENT.command,f.dataset.p)];
     if(v!=null){f.value=v;f.classList.add("autofilled");f.title="auto-filled from the drawing";any=true;}});
   if(any){
     const bar=document.createElement("div");bar.className="autobar";

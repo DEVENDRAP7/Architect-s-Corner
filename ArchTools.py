@@ -3254,9 +3254,21 @@ def auto_metrics(path):
         out["footprint"] = round(area, 2)
         out["builtup"] = round(area, 2)
         out["perimeter"] = round(per, 1)
-    seq = [f for f in FLOOR_ORDER if f in extract_levels(msp)]
+    lv = extract_levels(msp)
+    seq = [f for f in FLOOR_ORDER if f in lv]
     if seq:
         out["floors"] = len(seq)
+        if len(seq) > 1:
+            out["floor_height"] = round(lv[seq[1]] - lv[seq[0]], 2)
+    if "GROUND" in lv and "ROAD" in lv:
+        out["plinth_height"] = round(lv["GROUND"] - lv["ROAD"], 2)
+    if lv:
+        base = lv.get("ROAD", lv.get("GROUND"))
+        if base is not None:
+            out["building_height"] = round(max(lv.values()) - base, 2)
+    if "area" in out and "floors" in out:
+        # occupant estimate: NBC-style ~10 m2/person on total built-up
+        out["occupants"] = int(out["area"] * out["floors"] / 10)
     return out
 
 
@@ -3682,7 +3694,7 @@ def build_parser():
 
     sp = add("calc-lighting", cmd_calc_lighting, "light fixtures for lux")
     sp.add_argument("--area", type=float, required=True)
-    sp.add_argument("--lux", type=float, required=True)
+    sp.add_argument("--lux", type=float, default=300, help="target lux (office ~300)")
     sp.add_argument("--lumen", type=float, default=4000)
     sp.add_argument("--uf", type=float, default=0.5)
     sp.add_argument("--mf", type=float, default=0.8)
