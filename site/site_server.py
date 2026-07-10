@@ -295,6 +295,7 @@ def admin(key: str = ""):
         "<tr><td colspan=4>(no messages yet)</td></tr>"
     dayrows = "".join(f"<tr><td>{d}</td><td>{n}</td></tr>" for d, n in days)
     html = f"""<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta http-equiv="refresh" content="10">
 <title>AC — owner dashboard</title><style>
 body{{font-family:system-ui;background:#0d0e11;color:#edece7;margin:0;padding:34px;font-size:14px}}
 h1{{font-size:18px}} h2{{font-size:13px;text-transform:uppercase;letter-spacing:.1em;color:#8f9097;margin-top:34px}}
