@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BOQ Comparer — Architect's Corner</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#0d0e11;--surface:#131418;--surface-2:#17181d;--line:#26272d;--line-2:#33343b;
+    --ink:#edece7;--muted:#8f9097;--faint:#595a62;
+    --amber:#e8ae3f;--amber-ink:#171204;--amber-soft:rgba(232,174,63,.09);
+    --good:#69c98a;--warn:#e0684a;
+    --paper:#f2efe7;--paper-2:#e9e5d9;--paper-line:#d7d2c3;--paper-ink:#26241d;--paper-muted:#6e6a5d;
+    --ease:cubic-bezier(.22,.8,.36,1);
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Space Grotesk",system-ui,sans-serif;background:var(--bg);color:var(--ink);
+       font-size:14.5px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  body::after{content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;opacity:.34;
+    background-image:linear-gradient(#1a1b20 1px,transparent 1px),linear-gradient(90deg,#1a1b20 1px,transparent 1px);
+    background-size:56px 56px;mask-image:linear-gradient(#000,transparent 80%)}
+  button{font:inherit;cursor:pointer}
+  ::selection{background:rgba(232,174,63,.3)}
+  header{position:sticky;top:0;z-index:40;height:58px;padding:0 24px;border-bottom:1px solid var(--line);
+      background:var(--bg);display:flex;align-items:center;gap:13px}
+  .mark{width:32px;height:32px;border:1px solid var(--line-2);border-radius:7px;color:var(--amber);
+      display:grid;place-items:center;position:relative;background:var(--surface)}
+  .mark::after{content:"";position:absolute;top:-1px;right:-1px;width:8px;height:8px;
+      border-top:2px solid var(--amber);border-right:2px solid var(--amber);border-top-right-radius:7px}
+  header h1{font-size:13.5px;margin:0;font-weight:600;letter-spacing:.14em;text-transform:uppercase}
+  header h1 em{font-style:normal;color:var(--amber)}
+  header .sub{color:var(--faint);font-size:11.5px;font-family:"JetBrains Mono",monospace}
+  .wrap{max-width:1180px;margin:0 auto;padding:26px 24px 60px}
+  h2{font-size:11px;text-transform:uppercase;letter-spacing:.2em;color:var(--muted);font-weight:600;
+     display:flex;align-items:baseline;gap:12px;margin:0 0 14px}
+  h2::before{content:attr(data-n);font-family:"JetBrains Mono",monospace;color:var(--amber);letter-spacing:0}
+  h2::after{content:"";flex:1;height:1px;background:var(--line);align-self:center}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:26px}
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:20px}
+  label{display:block;font-size:10.5px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted);
+      margin:10px 0 5px;font-family:"JetBrains Mono",monospace}
+  input[type=text],input[type=file]{width:100%;padding:9px 11px;border:1px solid var(--line-2);
+      border-radius:7px;font:inherit;font-size:13px;background:var(--bg);color:var(--ink)}
+  input:focus{outline:none;border-color:var(--amber);box-shadow:0 0 0 3px var(--amber-soft)}
+  input[type=file]{padding:7px;font-size:12px}
+  input[type=file]::file-selector-button{background:var(--surface-2);border:1px solid var(--line-2);
+      color:var(--muted);border-radius:5px;padding:5px 10px;margin-right:10px;cursor:pointer;font-size:12px}
+  .btn{border:1px solid var(--amber);background:var(--amber);color:var(--amber-ink);border-radius:8px;
+      padding:10px 22px;font-weight:600;font-size:13px;transition:.15s var(--ease);margin-top:14px}
+  .btn:hover{transform:translateY(-1px)}
+  .btn:disabled{opacity:.5;transform:none}
+  .btn.ghost{background:transparent;color:var(--muted);border-color:var(--line-2)}
+  .hint{font-size:11.5px;color:var(--faint);margin-top:10px;font-family:"JetBrains Mono",monospace}
+  .filelist{margin-top:12px}
+  .file{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:8px;
+      padding:8px 12px;margin-bottom:7px;background:var(--bg);font-size:13px}
+  .file .k{font-size:9.5px;color:var(--amber);border:1px solid var(--amber);border-radius:4px;
+      padding:1px 6px;font-family:"JetBrains Mono",monospace;text-transform:uppercase}
+  .file .n{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .file .i{color:var(--faint);font-size:11px;font-family:"JetBrains Mono",monospace}
+  .file .x{border:none;background:none;color:var(--faint);font-size:15px;padding:0 4px}
+  .file .x:hover{color:var(--warn)}
+  .warns{color:#f0b429;font-size:11.5px;margin-top:6px;font-family:"JetBrains Mono",monospace}
+  .runbar{display:flex;gap:12px;align-items:center;margin:4px 0 26px}
+  .runbar .btn{margin-top:0;padding:12px 34px;text-transform:uppercase;font-size:12.5px;letter-spacing:.06em}
+
+  /* report — printout style */
+  #report{display:none;border:1px solid var(--line-2);border-radius:12px;overflow:hidden;
+      box-shadow:0 24px 60px -30px rgba(0,0,0,.8)}
+  .rtop{display:flex;align-items:center;gap:8px;padding:10px 16px;background:var(--surface-2);
+      border-bottom:1px solid var(--line-2)}
+  .rtop .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.2em;color:var(--amber);
+      font-weight:600;font-family:"JetBrains Mono",monospace}
+  .rtop .sp{flex:1}
+  .rtop button{border:1px solid var(--line-2);background:transparent;border-radius:6px;padding:5px 12px;
+      font-size:11.5px;color:var(--muted);font-family:"JetBrains Mono",monospace}
+  .rtop button:hover{border-color:var(--amber);color:var(--amber)}
+  .rbody{background:var(--paper);color:var(--paper-ink);padding:22px 24px;max-height:72vh;overflow:auto}
+  .rbody .hd{font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--paper-muted);
+      border-bottom:1px solid var(--paper-line);padding-bottom:6px;margin:20px 0 10px;
+      font-family:"JetBrains Mono",monospace}
+  .rbody .hd:first-child{margin-top:0}
+  .sumgrid{display:flex;gap:12px;flex-wrap:wrap}
+  .sum{background:#fff;border:1px solid var(--paper-line);border-radius:8px;padding:13px 16px;min-width:170px}
+  .sum b{display:block;font-family:"JetBrains Mono",monospace;font-size:19px}
+  .sum i{font-style:normal;font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--paper-muted)}
+  .sum.win{border-left:3px solid var(--good)}
+  table{border-collapse:collapse;width:100%;background:#fff;border:1px solid var(--paper-line);
+      border-radius:6px;overflow:hidden;font-size:12px;margin-bottom:8px}
+  th{font-size:9.5px;text-transform:uppercase;letter-spacing:.08em;color:var(--paper-muted);text-align:left;
+      padding:7px 10px;border-bottom:1.5px solid var(--paper-ink);font-family:"JetBrains Mono",monospace;
+      position:sticky;top:0;background:#fff}
+  td{padding:6px 10px;border-bottom:1px solid var(--paper-2);font-family:"JetBrains Mono",monospace;
+      vertical-align:top}
+  td.d{font-family:"Space Grotesk",sans-serif;max-width:340px}
+  tr:last-child td{border-bottom:none}
+  .low{background:#fdeaea;color:#a33}
+  .best{background:#e9f6ee;font-weight:600}
+  .miss{color:#bbb}
+  .flag{font-size:9px;border-radius:3px;padding:0 4px;margin-left:5px;vertical-align:middle}
+  .flag.LOW{background:#e0684a;color:#fff}
+  .flag.HIGH{background:#b3862f;color:#fff}
+  .mono{font-family:"JetBrains Mono",monospace}
+  #toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%);background:var(--surface-2);
+      color:var(--ink);padding:11px 20px;border-radius:8px;font-size:13px;border:1px solid var(--line-2);
+      opacity:0;pointer-events:none;transition:.22s;z-index:100}
+  #toast.show{opacity:1}
+  #toast.err{border-color:var(--warn);color:#f4b7a8}
+  .spin{display:inline-block;width:13px;height:13px;border:2px solid currentColor;border-top-color:transparent;
+      border-radius:50%;animation:s .6s linear infinite;vertical-align:-2px}
+  @keyframes s{to{transform:rotate(360deg)}}
+  @media(max-width:800px){.cols{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <div class="mark"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V8l7-5 7 5v13"/><path d="M9 21v-6h6v6"/></svg></div>
+  <h1>BOQ <em>Comparer</em></h1>
+  <span class="sub">architect's corner · quotation analysis</span>
+</header>
+
+<div class="wrap">
+  <div class="cols">
+    <div class="card">
+      <h2 data-n="01">Your BOQ (baseline)</h2>
+      <form id="ownerForm">
+        <label>Name (optional)</label>
+        <input type="text" id="oName" placeholder="My estimate">
+        <label>File — Excel / PDF / photo</label>
+        <input type="file" id="oFile" accept=".xls,.xlsx,.xlsm,.pdf,.png,.jpg,.jpeg,.webp" required>
+        <button class="btn" id="oBtn" type="submit">Upload baseline</button>
+      </form>
+      <div class="filelist" id="ownerList"></div>
+    </div>
+    <div class="card">
+      <h2 data-n="02">Contractor quotes (any number)</h2>
+      <form id="conForm">
+        <label>Contractor name (optional)</label>
+        <input type="text" id="cName" placeholder="ABC Constructions">
+        <label>File — Excel / PDF / photo</label>
+        <input type="file" id="cFile" accept=".xls,.xlsx,.xlsm,.pdf,.png,.jpg,.jpeg,.webp" required>
+        <button class="btn" id="cBtn" type="submit">Add contractor</button>
+      </form>
+      <div class="filelist" id="conList"></div>
+      <div class="hint">photos need Tesseract OCR installed; Excel & PDF work out of the box</div>
+    </div>
+  </div>
+
+  <div class="runbar">
+    <button class="btn" id="goBtn">Compare quotes →</button>
+    <button class="btn ghost" id="resetBtn">Start over</button>
+  </div>
+
+  <div id="report">
+    <div class="rtop">
+      <span class="lbl">Comparison report</span><span class="sp"></span>
+      <button id="csvBtn">Download CSV</button>
+    </div>
+    <div class="rbody" id="rbody"></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+const $=s=>document.querySelector(s);
+let REPORT=null,toastT;
+function toast(m,k){const t=$("#toast");t.className="show "+(k||"");t.textContent=m;
+  clearTimeout(toastT);toastT=setTimeout(()=>t.className="",2600);}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));}
+function inr(v){return v==null?"—":Number(v).toLocaleString("en-IN",{maximumFractionDigits:0});}
+
+async function refresh(){
+  const s=await(await fetch("/api/state")).json();
+  $("#ownerList").innerHTML=s.owner?fileRow("BASE",s.owner.source,s.owner.items,false):"";
+  $("#conList").innerHTML=s.contractors.map(c=>
+    fileRow("QUOTE",c.source,c.items,true)+
+    (c.warnings.length?`<div class="warns">⚠ ${esc(c.warnings.join("; "))}</div>`:"")).join("");
+}
+function fileRow(kind,src,n,removable){
+  return `<div class="file"><span class="k">${kind}</span><span class="n">${esc(src)}</span>
+    <span class="i">${n} items</span>
+    ${removable?`<button class="x" onclick="removeCon('${esc(src)}')">&times;</button>`:""}</div>`;
+}
+async function removeCon(src){
+  const f=new FormData();f.append("source",src);
+  await fetch("/api/remove",{method:"POST",body:f});refresh();
+}
+async function up(form,role,nameEl,fileEl,btnEl){
+  const btn=$(btnEl);btn.disabled=true;btn.innerHTML='<span class="spin"></span> Reading…';
+  const f=new FormData();f.append("role",role);f.append("name",$(nameEl).value);
+  f.append("file",$(fileEl).files[0]);
+  try{
+    const d=await(await fetch("/api/upload",{method:"POST",body:f})).json();
+    if(d.error){toast(d.error,"err");}
+    else{toast(`${d.source}: ${d.items} items read (${d.kind})`);
+      $(nameEl).value="";$(fileEl).value="";refresh();
+      if(d.warnings.length)toast("⚠ "+d.warnings[0],"err");}
+  }catch(e){toast("Upload failed","err");}
+  btn.disabled=false;btn.textContent=role==="owner"?"Upload baseline":"Add contractor";
+}
+$("#ownerForm").addEventListener("submit",e=>{e.preventDefault();up(e.target,"owner","#oName","#oFile","#oBtn");});
+$("#conForm").addEventListener("submit",e=>{e.preventDefault();up(e.target,"contractor","#cName","#cFile","#cBtn");});
+$("#resetBtn").addEventListener("click",async()=>{await fetch("/api/reset",{method:"POST"});
+  $("#report").style.display="none";refresh();});
+
+$("#goBtn").addEventListener("click",async()=>{
+  const btn=$("#goBtn");btn.disabled=true;btn.innerHTML='<span class="spin"></span> Comparing…';
+  try{
+    const d=await(await fetch("/api/compare")).json();
+    if(d.error){toast(d.error,"err");}
+    else{REPORT=d;render(d);$("#report").style.display="block";
+      $("#report").scrollIntoView({behavior:"smooth"});}
+  }catch(e){toast("Compare failed","err");}
+  btn.disabled=false;btn.textContent="Compare quotes →";
+});
+
+function render(d){
+  const names=d.contractors.map(c=>c.name);
+  let h=`<div class="hd">Summary — baseline: ${esc(d.owner)} (${d.owner_items} items, `+
+        `est ₹${inr(d.owner_total)})</div><div class="sumgrid">`;
+  d.ranking.forEach((r,i)=>{
+    const c=d.contractors.find(x=>x.name===r.name);
+    h+=`<div class="sum ${i===0?'win':''}"><b>₹${inr(r.total)}</b>
+        <i>${esc(r.name)}${i===0?" · lowest":""}</i>
+        <div style="font-size:11px;color:var(--paper-muted);margin-top:6px">
+        ${c.items_quoted}/${d.owner_items} items · ${c.missing.length} missing
+        ${c.low_flags?` · <span style="color:#a33">${c.low_flags} suspicious low</span>`:""}</div></div>`;
+  });
+  h+=`</div>`;
+  d.contractors.forEach(c=>{
+    if(c.missing.length){
+      h+=`<div class="hd">${esc(c.name)} — did NOT quote (${c.missing.length})</div>
+          <div style="font-size:12px">${c.missing.slice(0,12).map(esc).join("; ")}
+          ${c.missing.length>12?" …":""}</div>`;
+    }
+  });
+  h+=`<div class="hd">Item-by-item rates (₹)</div><table><tr><th>item</th><th>unit</th><th>qty</th>
+      <th>your rate</th>${names.map(n=>`<th>${esc(n)}</th>`).join("")}</tr>`;
+  d.rows.forEach(r=>{
+    h+=`<tr><td class="d">${esc(r.desc)}</td><td>${esc(r.unit)}</td><td>${r.qty??""}</td>
+        <td>${inr(r.owner_rate)}</td>`;
+    names.forEach(n=>{
+      const v=r.rates[n],f=r.flags[n];
+      const cls=v==null?"miss":(n===r.lowest&&names.length>1?"best":(f==="LOW"?"low":""));
+      h+=`<td class="${cls}">${v==null?"—":inr(v)}${f?`<span class="flag ${f}">${f}</span>`:""}</td>`;
+    });
+    h+="</tr>";
+  });
+  h+="</table>";
+  $("#rbody").innerHTML=h;
+}
+
+$("#csvBtn").addEventListener("click",()=>{
+  if(!REPORT)return;
+  const names=REPORT.contractors.map(c=>c.name);
+  const lines=[["item","unit","qty","your_rate",...names].join(",")];
+  REPORT.rows.forEach(r=>{
+    lines.push([`"${r.desc.replace(/"/g,'""')}"`,r.unit,r.qty??"",r.owner_rate??"",
+      ...names.map(n=>r.rates[n]??"")].join(","));
+  });
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(new Blob([lines.join("\n")],{type:"text/csv"}));
+  a.download="boq_comparison.csv";a.click();URL.revokeObjectURL(a.href);
+});
+
+refresh();
+</script>
+</body>
+</html>

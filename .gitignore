@@ -37,3 +37,6 @@ context.md
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# BOQ comparer runtime uploads
+boq/uploads/
