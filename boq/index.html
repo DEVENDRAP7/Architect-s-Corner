@@ -127,8 +127,8 @@
       <form id="ownerForm">
         <label>Name (optional)</label>
         <input type="text" id="oName" placeholder="My estimate">
-        <label>File — Excel / PDF / photo</label>
-        <input type="file" id="oFile" accept=".xls,.xlsx,.xlsm,.pdf,.png,.jpg,.jpeg,.webp" required>
+        <label>File(s) — Excel / PDF / photos (select all pages together)</label>
+        <input type="file" id="oFile" accept=".xls,.xlsx,.xlsm,.pdf,.png,.jpg,.jpeg,.webp" multiple required>
         <button class="btn" id="oBtn" type="submit">Upload baseline</button>
       </form>
       <div class="filelist" id="ownerList"></div>
@@ -138,8 +138,8 @@
       <form id="conForm">
         <label>Contractor name (optional)</label>
         <input type="text" id="cName" placeholder="ABC Constructions">
-        <label>File — Excel / PDF / photo</label>
-        <input type="file" id="cFile" accept=".xls,.xlsx,.xlsm,.pdf,.png,.jpg,.jpeg,.webp" required>
+        <label>File(s) — Excel / PDF / photos (select all pages together)</label>
+        <input type="file" id="cFile" accept=".xls,.xlsx,.xlsm,.pdf,.png,.jpg,.jpeg,.webp" multiple required>
         <button class="btn" id="cBtn" type="submit">Add contractor</button>
       </form>
       <div class="filelist" id="conList"></div>
@@ -189,7 +189,7 @@ async function removeCon(src){
 async function up(form,role,nameEl,fileEl,btnEl){
   const btn=$(btnEl);btn.disabled=true;btn.innerHTML='<span class="spin"></span> Reading…';
   const f=new FormData();f.append("role",role);f.append("name",$(nameEl).value);
-  f.append("file",$(fileEl).files[0]);
+  [...$(fileEl).files].forEach(fl=>f.append("files",fl));
   try{
     const d=await(await fetch("/api/upload",{method:"POST",body:f})).json();
     if(d.error){toast(d.error,"err");}

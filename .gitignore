@@ -41,3 +41,5 @@ desktop.ini
 # BOQ comparer runtime uploads
 boq/uploads/
 test_quote*
+quote_p*.png
+quote_scanned.pdf

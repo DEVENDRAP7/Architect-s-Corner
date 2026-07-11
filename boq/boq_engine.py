@@ -118,15 +118,48 @@ def _parse_pdf(path, warnings):
             for table in (page.extract_tables() or []):
                 rows += [[("" if c is None else c) for c in r] for r in table]
     if not rows:
-        warnings.append("no tables found in PDF (scanned image PDF? "
-                        "export the BOQ as a real PDF or Excel)")
+        # scanned PDF (pages are images) -> render each page and OCR it
+        rows = _ocr_pdf(path, warnings)
+    return rows
+
+
+def _ocr_pdf(path, warnings):
+    try:
+        import pypdfium2 as pdfium
+    except ImportError:
+        warnings.append("scanned PDF needs: pip install pypdfium2")
+        return []
+    rows = []
+    doc = pdfium.PdfDocument(path)
+    for page in doc:
+        img = page.render(scale=2.5).to_pil()
+        rows += _ocr_rows(img, warnings)
+    doc.close()
+    if rows:
+        warnings.append("scanned PDF parsed via OCR -- verify numbers "
+                        "before trusting")
+    else:
+        warnings.append("no tables found in PDF (and OCR found nothing)")
     return rows
 
 
 def _parse_image(path, warnings):
     try:
-        import pytesseract
         from PIL import Image
+    except ImportError:
+        warnings.append("image OCR needs: pip install pytesseract pillow")
+        return []
+    rows = _ocr_rows(Image.open(path), warnings)
+    if rows:
+        warnings.append("image parsed via OCR -- verify numbers before trusting")
+    return rows
+
+
+def _ocr_rows(img, warnings):
+    """PIL image -> table rows, via word coordinates (rows by y, cells by
+    x-gaps). Plain OCR text reads tables column-wise and destroys rows."""
+    try:
+        import pytesseract
     except ImportError:
         warnings.append("image OCR needs: pip install pytesseract pillow "
                         "+ the Tesseract program (github.com/UB-Mannheim/tesseract)")
@@ -140,9 +173,6 @@ def _parse_image(path, warnings):
                 pytesseract.pytesseract.tesseract_cmd = p
                 break
     try:
-        img = Image.open(path)
-        # word boxes, not plain text -- plain text reads a table column-by-
-        # column and destroys the rows. Rebuild rows from y, cells from x gaps.
         d = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
     except Exception as e:
         warnings.append(f"OCR failed: {e}")
@@ -178,30 +208,46 @@ def _parse_image(path, warnings):
                 cells.append(t)
             prev_end = left + w
         rows.append(cells)
-    warnings.append("image parsed via OCR -- verify numbers before trusting")
     return rows
 
 
-def parse_boq(path):
+def _gather_rows(path, warnings):
+    """(rows, kind) from one file of any supported type."""
     ext = os.path.splitext(path)[1].lower()
-    warnings = []
     if ext in (".xls", ".xlsx", ".xlsm"):
         rows = []
         for _nm, sheet_rows in open_workbook(path):
             rows += sheet_rows
-        kind = "excel"
-    elif ext == ".pdf":
-        rows, kind = _parse_pdf(path, warnings), "pdf"
-    elif ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
-        rows, kind = _parse_image(path, warnings), "image"
-    else:
-        return {"source": os.path.basename(path), "kind": "?", "items": [],
-                "warnings": [f"unsupported file type {ext}"]}
+        return rows, "excel"
+    if ext == ".pdf":
+        return _parse_pdf(path, warnings), "pdf"
+    if ext in (".png", ".jpg", ".jpeg", ".webp", ".bmp"):
+        return _parse_image(path, warnings), "image"
+    warnings.append(f"unsupported file type {ext}")
+    return [], "?"
+
+
+def parse_boq(path):
+    return parse_many([path])
+
+
+def parse_many(paths):
+    """Parse ONE BOQ spread across several files (e.g. 5 photos of one
+    quote, or photos + a sheet). Rows are concatenated in upload order and
+    parsed as a single table, so the header on page 1 also drives the
+    continuation pages that have no header of their own."""
+    warnings, rows, kinds = [], [], []
+    for p in paths:
+        r, k = _gather_rows(p, warnings)
+        rows += r
+        kinds.append(k)
     items = _rows_to_items(rows, warnings)
     if not items and not warnings:
         warnings.append("no BOQ items recognised")
-    return {"source": os.path.basename(path), "kind": kind,
-            "items": items, "warnings": warnings}
+    kind = "+".join(sorted(set(kinds))) if len(set(kinds)) > 1 else kinds[0]
+    src = os.path.basename(paths[0]) + (f" (+{len(paths)-1} more)"
+                                        if len(paths) > 1 else "")
+    return {"source": src, "kind": kind, "items": items, "warnings": warnings}
 
 
 # ----------------------------------------------------------------------

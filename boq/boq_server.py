@@ -13,6 +13,7 @@ Run:  python boq_server.py   ->  http://127.0.0.1:8090
 
 import os
 import shutil
+from typing import List
 
 from fastapi import FastAPI, UploadFile, Form
 from fastapi.responses import FileResponse, JSONResponse
@@ -35,12 +36,15 @@ def index():
 
 @app.post("/api/upload")
 async def upload(role: str = Form(...), name: str = Form(""),
-                 file: UploadFile = Form(...)):
-    safe = os.path.basename(file.filename or "boq")
-    dest = os.path.join(UPLOADS, safe)
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-    parsed = boq_engine.parse_boq(dest)
+                 files: List[UploadFile] = Form(...)):
+    paths = []
+    for file in files:
+        safe = os.path.basename(file.filename or "boq")
+        dest = os.path.join(UPLOADS, safe)
+        with open(dest, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+        paths.append(dest)
+    parsed = boq_engine.parse_many(paths)
     if name.strip():
         parsed["source"] = name.strip()
     if not parsed["items"] and role == "owner":
