@@ -70,15 +70,36 @@ def _rows_to_items(rows, warnings):
         return []
     items = []
     for row in rows[hi + 1:]:
-        if cols["desc"] >= len(row):
+        # OCR/PDF sometimes glues the serial number onto the description,
+        # shifting every cell left by one -- split it back out.
+        if row and isinstance(row[0], str):
+            m = re.match(r"^(\d{1,4})\s+(\D.{4,})$", row[0].strip())
+            if m:
+                row = [m.group(1), m.group(2)] + list(row[1:])
+        if not row:
             continue
-        desc = str(row[cols["desc"]]).strip()
-        rate = _num(row[cols["rate"]]) if cols["rate"] < len(row) else None
+        # row lost its leading serial cell (common in OCR) -> everything
+        # sits one column left of the header. Detect: the desc column holds
+        # a short unit-ish token while the cell before it is real text.
+        off = 0
+        dc = cols["desc"]
+        if 0 < dc < len(row) + 1:
+            cand = str(row[dc]).strip() if dc < len(row) else ""
+            prev = str(row[dc - 1]).strip()
+            if (len(prev) >= 8 and any(ch.isalpha() for ch in prev)
+                    and (not cand or (len(cand) <= 6 and " " not in cand))):
+                off = -1
+        if dc + off >= len(row):
+            continue
+        desc = str(row[dc + off]).strip()
+        rc = cols["rate"] + off
+        rate = _num(row[rc]) if 0 <= rc < len(row) else None
         if not desc or rate is None:
             continue  # section headings, totals, blanks
         def g(f):
             c = cols.get(f)
-            return row[c] if c is not None and c < len(row) else None
+            c = c + off if c is not None else None
+            return row[c] if c is not None and 0 <= c < len(row) else None
         items.append({
             "desc": desc,
             "unit": str(g("unit") or "").strip(),
@@ -110,14 +131,53 @@ def _parse_image(path, warnings):
         warnings.append("image OCR needs: pip install pytesseract pillow "
                         "+ the Tesseract program (github.com/UB-Mannheim/tesseract)")
         return []
+    # default Windows install path when tesseract isn't on PATH
+    import shutil as _sh
+    if not _sh.which("tesseract"):
+        for p in (r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+                  r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"):
+            if os.path.isfile(p):
+                pytesseract.pytesseract.tesseract_cmd = p
+                break
     try:
-        text = pytesseract.image_to_string(Image.open(path))
+        img = Image.open(path)
+        # word boxes, not plain text -- plain text reads a table column-by-
+        # column and destroys the rows. Rebuild rows from y, cells from x gaps.
+        d = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT)
     except Exception as e:
         warnings.append(f"OCR failed: {e}")
         return []
-    # crude line -> row split on 2+ spaces; good enough for clean photos
-    rows = [re.split(r"\s{2,}", ln.strip()) for ln in text.splitlines()
-            if ln.strip()]
+    words = [(d["top"][i], d["left"][i], d["width"][i], d["text"][i].strip())
+             for i in range(len(d["text"])) if d["text"][i].strip()]
+    if not words:
+        warnings.append("OCR found no text in the image")
+        return []
+    words.sort()
+    heights = [d["height"][i] for i in range(len(d["text"])) if d["text"][i].strip()]
+    tol = max(8, statistics.median(heights) // 2)
+    gap = max(20, img.width // 50)      # x-gap that separates table cells
+    lines, cur, cur_top = [], [], None
+    for top, left, w, t in words:
+        if cur_top is None or abs(top - cur_top) <= tol:
+            cur.append((left, w, t))
+            cur_top = top if cur_top is None else cur_top
+        else:
+            lines.append(cur)
+            cur, cur_top = [(left, w, t)], top
+    lines.append(cur)
+    rows = []
+    for ln in lines:
+        ln.sort()
+        cells, prev_end = [], None
+        for left, w, t in ln:
+            if prev_end is not None and left - prev_end > gap:
+                cells.append(t)
+            elif cells:
+                cells[-1] += " " + t
+            else:
+                cells.append(t)
+            prev_end = left + w
+        rows.append(cells)
     warnings.append("image parsed via OCR -- verify numbers before trusting")
     return rows
 
