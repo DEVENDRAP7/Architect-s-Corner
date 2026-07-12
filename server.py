@@ -47,6 +47,11 @@ def index():
     return FileResponse(_res("web", "index.html"))
 
 
+@app.get("/logo.svg")
+def logo():
+    return FileResponse(_res("web", "logo.svg"))
+
+
 # ----------------------------------------------------------------------
 # API
 # ----------------------------------------------------------------------

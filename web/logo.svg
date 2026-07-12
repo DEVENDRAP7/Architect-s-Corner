@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Architect's Corner — the corner mark.
+       A drafting L holds three rising bars: a skyline that is also a chart —
+       drawings in, numbers out. Registration node at the vertex, dimension
+       line above. Amber on graphite. -->
+  <defs>
+    <linearGradient id="am" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#F2BE58"/>
+      <stop offset="1" stop-color="#D9992B"/>
+    </linearGradient>
+    <linearGradient id="am2" x1="0" y1="1" x2="0" y2="0">
+      <stop offset="0" stop-color="#E8AE3F"/>
+      <stop offset="1" stop-color="#F6CD7A"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="512" height="512" rx="116" fill="#0d0e11"/>
+
+  <!-- faint blueprint grid -->
+  <g stroke="#1b1c21" stroke-width="7">
+    <path d="M96 240h336M96 312h336M240 88v336M312 88v336"/>
+  </g>
+
+  <!-- dimension line (drafting detail) -->
+  <g stroke="#7a6228" stroke-width="9" stroke-linecap="round">
+    <path d="M240 116h184"/>
+    <path d="M240 102v28M424 102v28"/>
+    <path d="M232 124l16-16M416 124l16-16"/>
+  </g>
+
+  <!-- rising bars: skyline / chart inside the corner -->
+  <rect x="240" y="272" width="46" height="94"  rx="10" fill="url(#am2)" opacity=".45"/>
+  <rect x="309" y="216" width="46" height="150" rx="10" fill="url(#am2)" opacity=".72"/>
+  <rect x="378" y="152" width="46" height="214" rx="10" fill="url(#am2)"/>
+
+  <!-- the corner: two perpendicular drafting strokes -->
+  <path d="M176 118 V 384 H 430" fill="none" stroke="url(#am)" stroke-width="40"
+        stroke-linecap="round" stroke-linejoin="round"/>
+
+  <!-- registration node at the vertex -->
+  <rect x="146" y="354" width="60" height="60" rx="12" fill="url(#am)"/>
+  <rect x="166" y="374" width="20" height="20" rx="5" fill="#0d0e11"/>
+</svg>
