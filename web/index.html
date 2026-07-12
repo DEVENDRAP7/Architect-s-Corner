@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Architect's Corner — Toolkit</title>
+<link rel="icon" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="7" fill="%230d0e11"/><path d="M9 23V9h14" fill="none" stroke="%23e8ae3f" stroke-width="3" stroke-linecap="round"/><rect x="7" y="21" width="4" height="4" fill="%23e8ae3f"/></svg>'>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -200,6 +201,19 @@
              font-size:14px;color:var(--line-2);padding:3px;line-height:1;transition:.15s}
   .tool .fav:hover{color:var(--amber);transform:scale(1.15)}
   .tool .fav.on{color:var(--amber)}
+  /* category icon system */
+  .cico{display:inline-flex;align-self:center}
+  .cico svg{width:14px;height:14px}
+  .thead{display:flex;gap:9px;align-items:flex-start}
+  .tico{flex:none;width:26px;height:26px;border:1px solid var(--line-2);border-radius:7px;
+        display:grid;place-items:center;color:var(--ch,var(--amber));background:var(--bg);margin-top:1px}
+  .tico svg{width:14px;height:14px}
+  .tool:hover .tico{border-color:var(--ch,var(--amber))}
+  .tool .t{padding-right:20px}
+  .fico{display:inline-flex;vertical-align:-2px;margin-right:6px}
+  .fico svg{width:12px;height:12px}
+  .fchip{display:inline-flex;align-items:center}
+  .fchip.on .fico{color:var(--bg)!important}
   .noresults{text-align:center;color:var(--muted);padding:70px 20px}
   .noresults b{display:block;font-size:16px;color:var(--ink);margin-bottom:5px;font-weight:600}
 
@@ -258,6 +272,10 @@
   #rOut{padding:20px 22px;max-height:62vh;overflow:auto;background:var(--paper);color:var(--paper-ink)}
   #rRaw{display:none;padding:18px 22px;white-space:pre;overflow:auto;max-height:62vh;
         font-family:"JetBrains Mono",monospace;font-size:12px;background:var(--paper);color:var(--paper-ink)}
+  #rOut .rmeta{font-family:"JetBrains Mono",monospace;font-size:11px;color:var(--paper-muted);
+       border-bottom:1.5px solid var(--paper-ink);padding-bottom:8px;margin-bottom:14px;
+       letter-spacing:.04em}
+  #rOut .rmeta b{color:var(--paper-ink);text-transform:uppercase;letter-spacing:.1em;font-size:11px}
   #rOut .pline{font-size:13.5px;padding:2px 0;color:var(--paper-ink)}
   #rOut .pmono{font-family:"JetBrains Mono",monospace;font-size:11.5px;color:var(--paper-muted);padding:2px 0}
   #rOut .rhd{font-size:10.5px;text-transform:uppercase;letter-spacing:.18em;color:var(--paper-ink);
@@ -463,6 +481,8 @@
   <button class="hamb" id="hamb" title="Buildings">☰</button>
   <div class="brand">
     <div class="mark" title="Architect's Corner">
+      <img id="logoImg" src="logo.png" alt="" style="display:none;width:100%;height:100%;object-fit:contain;border-radius:6px"
+           onload="this.style.display='block';this.nextElementSibling.style.display='none'">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
         <path d="M3 21h18"/><path d="M5 21V8l7-5 7 5v13"/><path d="M9 21v-6h6v6"/>
       </svg>
@@ -599,6 +619,26 @@ const PRESETS={
   "--demand":["70","80","90","100"],
 };
 const STRICT=new Set(["--unit"]);
+/* per-category icon + hue (drives section headers, cards, chips) */
+const _I=(p)=>`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+const CAT_META={
+ "Structure":            {h:"#e8ae3f",i:_I('<path d="M6 21V7l6-4 6 4v14"/><path d="M6 21h12M10 21v-5h4v5"/>')},
+ "Foundation":           {h:"#d98a4a",i:_I('<path d="M3 21h18M6 21v-5h12v5"/><path d="M9 16V9h6v7"/>')},
+ "Plinth":               {h:"#c9a24d",i:_I('<path d="M3 20h18M5 20v-4h14v4"/><path d="M9 16v-6h6v6"/>')},
+ "Slab":                 {h:"#8fb96a",i:_I('<rect x="3" y="9" width="18" height="4" rx="1"/><path d="M6 13v5M18 13v5M12 13v5"/>')},
+ "Chajja / Sunshade":    {h:"#e0b45c",i:_I('<path d="M4 10h16l-2-4H6z"/><path d="M6 10v9M18 10v9"/>')},
+ "Areas":                {h:"#6fb3a8",i:_I('<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M4 12h16M12 4v16"/>')},
+ "Openings":             {h:"#7da7d9",i:_I('<rect x="6" y="3" width="12" height="18" rx="1"/><circle cx="15" cy="12" r="1"/>')},
+ "Finishes & quantities":{h:"#c98ab5",i:_I('<path d="M4 20l4-4M8 16l8-8 4 4-8 8H8z"/><path d="M14 6l4 4"/>')},
+ "Levels & heights":     {h:"#9a8fd9",i:_I('<path d="M12 3v18M8 6l4-3 4 3M8 18l4 3 4-3"/>')},
+ "Layer analysis":       {h:"#6fb3d9",i:_I('<path d="M12 3 3 8l9 5 9-5z"/><path d="M3 13l9 5 9-5"/>')},
+ "Drawing QA":           {h:"#69c98a",i:_I('<circle cx="11" cy="11" r="7"/><path d="m21 21-4-4M8 11l2 2 4-4"/>')},
+ "MEP & services":       {h:"#5cc0c9",i:_I('<path d="M5 12h4l2-6 3 12 2-6h3"/>')},
+ "Code & compliance":    {h:"#d97f6f",i:_I('<path d="M12 3l8 4v5c0 5-3.5 8-8 9-4.5-1-8-4-8-9V7z"/><path d="m9 12 2 2 4-4"/>')},
+ "Calculators":          {h:"#b8b8c4",i:_I('<rect x="5" y="3" width="14" height="18" rx="2"/><path d="M8 7h8M8 12h2M14 12h2M8 16h2M14 16h2"/>')},
+ "Industry & rooms":     {h:"#d9a86f",i:_I('<path d="M3 21V10l6 3V10l6 3V7l6 3v11z"/><path d="M3 21h18"/>')},
+};
+function catMeta(c){return CAT_META[c]||{h:"var(--amber)",i:_I('<circle cx="12" cy="12" r="8"/>')};}
 const FAV=new Set(JSON.parse(localStorage.getItem("ac_fav")||"[]"));
 let RECENT=JSON.parse(localStorage.getItem("ac_recent")||"[]");
 
@@ -699,7 +739,8 @@ function buildDock(){
 function buildFilters(){
   const cats=[...new Set(TOOLS.map(t=>t.category))].sort();
   $("#filters").innerHTML=`<button class="fchip ${CAT_FILTER===''?'on':''}" onclick="setFilter('')">All</button>`+
-    cats.map(c=>`<button class="fchip ${CAT_FILTER===c?'on':''}" onclick="setFilter('${esc(c)}')">${esc(c)}</button>`).join("");
+    cats.map(c=>{const m=catMeta(c);return `<button class="fchip ${CAT_FILTER===c?'on':''}" onclick="setFilter('${esc(c)}')">
+      <span class="fico" style="color:${m.h}">${m.i}</span>${esc(c)}</button>`;}).join("");
 }
 function setFilter(c){CAT_FILTER=c;buildFilters();render();}
 function render(){
@@ -709,16 +750,17 @@ function render(){
   $("#count").textContent=`${list.length} / ${TOOLS.length} tools`+(CAT_FILTER?`  ·  ${CAT_FILTER}`:"");
   if(!list.length){$("#catalog").innerHTML=`<div class="noresults"><b>No tools match</b>Try another word or clear the filter.</div>`;return;}
   const cats={};list.forEach(t=>(cats[t.category]=cats[t.category]||[]).push(t));
-  $("#catalog").innerHTML=Object.keys(cats).sort().map(c=>`
-    <div class="cat"><h2>${esc(c)} <span class="n">${cats[c].length}</span></h2>
-      <div class="grid">${cats[c].map(toolCard).join("")}</div></div>`).join("");
+  $("#catalog").innerHTML=Object.keys(cats).sort().map(c=>{const m=catMeta(c);return `
+    <div class="cat"><h2><span class="cico" style="color:${m.h}">${m.i}</span>${esc(c)} <span class="n">${cats[c].length}</span></h2>
+      <div class="grid">${cats[c].map(toolCard).join("")}</div></div>`;}).join("");
   initReveal();
 }
 function toolCard(t){
-  return `<div class="tool" onclick='pick(${JSON.stringify(t.command)})'>
+  const m=catMeta(t.category);
+  return `<div class="tool" style="--ch:${m.h}" onclick='pick(${JSON.stringify(t.command)})'>
     <button class="fav ${FAV.has(t.command)?'on':''}" title="favourite"
       onclick='event.stopPropagation();toggleFav(${JSON.stringify(t.command)})'>${FAV.has(t.command)?'★':'☆'}</button>
-    <div class="t">${esc(t.title)}</div>
+    <div class="thead"><span class="tico">${m.i}</span><div class="t">${esc(t.title)}</div></div>
     <div class="s">${esc(t.summary||"")}</div>
     <div class="c">${esc(t.command)}</div></div>`;
 }
@@ -805,7 +847,10 @@ function showError(msg){
 }
 function showResult(text){
   RAWTEXT=text;$("#rStatus").textContent="Result";
-  $("#rOut").innerHTML=renderOutput(text);
+  const when=new Date().toLocaleString("en-IN",{dateStyle:"medium",timeStyle:"short"});
+  const meta=`<div class="rmeta"><b>${esc(CURRENT?CURRENT.title:"")}</b>`+
+    `${ACTIVE_B?` · building ${esc(ACTIVE_B)}`:""} · ${when}</div>`;
+  $("#rOut").innerHTML=meta+renderOutput(text);
   $("#rRaw").textContent=text;
   $("#rOut").style.display="block";$("#rRaw").style.display="none";
   $("#rView").classList.remove("on");$("#rView").textContent="Raw";
