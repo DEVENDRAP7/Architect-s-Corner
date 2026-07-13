@@ -655,6 +655,81 @@ if(!SID){SID=Math.random().toString(36).slice(2)+Date.now().toString(36);
 /* =====================================================================
    LIVE DEMO — Simulate runs the real ArchTools engine server-side
    ===================================================================== */
+/* recorded outputs from the real engine on the sample drawing — shown when
+   the page is hosted statically (GitHub Pages) with no backend */
+const CANNED={
+"concrete":`CONCRETE  (auto from drawing -- sizes & heights read from the drawing)
+
+COLUMN SECTIONS (read from the drawing)
+section (mm)  count  concrete m3
+------------  -----  -----------
+450x450       6      4.25
+300x450       4      1.89
+300x300       2      0.63
+Storey heights: GROUND->FIRST 3.5m, FIRST->SECOND 3.5m, SECOND->TERRACE 3.5m
+
+SUMMARY
+item                      concrete m3
+------------------------  -----------
+Columns (superstructure)  6.77
+Floor slabs               86.40
+
+Total RCC concrete: 93.17 m3
+(slab: 144 m2 x 150 mm x 4 floors)
+Sections & storey heights are taken from the drawing -- nothing typed.`,
+"columns":`section (mm)  count  area (m2)
+------------  -----  ---------
+450x450       3      0.2025
+300x450       2      0.1350
+300x300       1      0.0900
+
+Distinct column tags : 6
+Total column types   : 6`,
+"foundation":`FOUNDATION TAKEOFF  (auto from drawing -- 2 sizes, 3 footings)
+
+size (mm)  nos  concrete m3  excavation m3
+---------  ---  -----------  -------------
+1500x1500  2    2.02         13.2
+1200x1200  1    0.65         4.9
+
+Footing concrete (450 mm thick) : 2.67 m3
+Steel (0.8%)                : 168 kg (0.17 t)
+PCC bed (100 mm, +100 offset): 0.77 m3 (~3 cement bags, 1:4:8)
+Excavation (depth 1.5 m, +300 mm working space): 18.1 m3
+Backfill (excavation - footing - PCC): 14.6 m3`,
+"qa-report":`DRAWING HEALTH REPORT  (read-only -- nothing was changed)
+
+check                               found
+----------------------------------  -----
+Duplicate lines (same start/end)    1
+Stray fragments (lines < 10 units)  1
+Nearly-closed polylines (gap < 50)  1
+Overlapping text pairs              0
+Duplicate dimensions                0
+Blocks on layer 0                   0
+Empty layers                        1
+
+Empty layers: UNUSED-LAYER
+
+Entities scanned: 40   Issues found: 4
+Verdict: Attention — review the counts above in AutoCAD.`,
+"levels":`level              elev (m)
+-----------------  --------
+GROUND FLOOR LVL   +0.00
+FIRST FLOOR LVL    +3.50
+SECOND FLOOR LVL   +7.00
+TERRACE FLOOR LVL  +10.50`,
+"area-statement":`AREA STATEMENT  (auto from drawing)
+
+Built-up footprint : 144.00 m2
+Perimeter          : 52.0 m
+Floors (from levels): 4  (GROUND, FIRST, SECOND, TERRACE)
+Total built-up (footprint x floors): 576.00 m2
+
+CLOSED AREAS PER LAYER (rooms/zones live on their layers)
+layer     area m2
+--------  -------
+BOUNDARY  144.0`};
 let DEMO_TOOL="concrete";
 document.querySelectorAll("#demoTools button").forEach(b=>{
   b.addEventListener("click",()=>{
@@ -680,7 +755,9 @@ $("#simBtn").addEventListener("click",async()=>{
     }else out.textContent=text;
   }catch(e){
     box.classList.remove("scanning");
-    out.textContent="Demo needs the site backend running:\n\n  python site_server.py\n\nthen open http://127.0.0.1:8080";
+    out.textContent="— recorded output from the real engine on the sample drawing —\n\n"
+      +(CANNED[DEMO_TOOL]||"(sample unavailable)")
+      +"\n\n(The desktop app runs this live on your own drawings.)";
   }
   btn.disabled=false;btn.textContent="▶ Simulate on the sample drawing";
 });
