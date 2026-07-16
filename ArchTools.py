@@ -168,6 +168,7 @@ CATALOG = {
     "wall-area":   ("Finishes & quantities", "Wall area (plaster/paint)"),
     "layer-length": ("Finishes & quantities", "Length on one layer (pipe/chajja)"),
     # Drawing QA
+    "drawing-check": ("Drawing QA", "Which tools will work on this drawing"),
     "qa-report":   ("Drawing QA", "Drawing health report (find errors)"),
     "dxf-diff":    ("Drawing QA", "Compare two drawings / revisions"),
     "attr-audit":  ("Drawing QA", "Block attribute + layer audit"),
@@ -2153,6 +2154,83 @@ def cmd_qa_report(args):
           else "Attention — review the counts above in AutoCAD."))
 
 
+def cmd_drawing_check(args):
+    """Scan a DXF and report which tagging CONVENTIONS it uses, so you know
+    up-front which auto takeoff tools will work on it -- a trust check before
+    you rely on any number. Read-only. The layer/QA/calculator tools work on
+    ANY drawing; only the structural takeoff tools below need the tags."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+
+    col, foot, floors, lvls, opens = set(), set(), set(), set(), set()
+    open_pat = re.compile(r"^(D\d+|V-?\d+|VP\d+|FVP\d+|ED\d+|HD|HW|RS-?\d*|SW\d*|OW|LW)$")
+    for s, *_ in all_text_entities(msp):
+        st = s.strip()
+        m = _SIZEPAT.match(st)
+        if m:
+            col.add(f"{m.group(1)} {m.group(2)}x{m.group(3)}")
+        m = _FOOTPAT.match(st)
+        if m:
+            foot.add(f"{m.group(1)} {m.group(2)}x{m.group(3)}")
+        u = re.sub(r"\s+", " ", st.upper())
+        fm = _FLOORPAT.search(u)
+        if fm:
+            floors.add(fm.group(0))
+        if _LVLPAT.search(u):
+            lvls.add(u[:30])
+        for line in st.split("\n"):
+            if open_pat.match(line.strip()):
+                opens.add(line.strip())
+
+    bnames = [(e.dxf.name or "") for e in msp if e.dxftype() == "INSERT"]
+    def blk(pat):
+        r = re.compile(pat, re.I)
+        return sorted({b for b in bnames if b and r.search(b)})
+    doors, wins = blk("door"), blk("window|glass|vp")
+    sani, park = blk(r"wc|toilet|urinal|basin|sink|sanit|ewc|wash"), blk(r"park|car|ecs|two.?wheel")
+    nlayers = len(list(doc.layers))
+
+    conv = [
+        ("Column tags (C1 + 750x750)", col,
+         "columns, colvol, floorcols, colschedule, concrete, perimeter/plinth-columns, column-spacing"),
+        ("Footing tags (F1 + 1800x1800)", foot, "foundation, footing-schedule"),
+        ("Floor-plan titles (GROUND FLOOR PLAN)", floors, "floorcols, per-floor colvol"),
+        ("Level marks (GROUND FLOOR LVL +1.20)", lvls, "levels, heights, slab, floor counts, colvol elevations"),
+        ("Opening tags (D1 1000x2100)", opens, "schedule, door-width-check"),
+        ("Named door blocks (DOOR_900)", doors, "doors"),
+        ("Named window blocks", wins, "windows"),
+        ("Named sanitary blocks (WC)", sani, "sanitary"),
+        ("Named parking blocks (CAR_PARK)", park, "parking"),
+    ]
+    rows = [[name, (f"yes ({len(found)})" if found else "no"), tools]
+            for name, found, tools in conv]
+    present = sum(1 for _, f, _ in conv if f)
+
+    print("DRAWING CONVENTION CHECK  (read-only -- nothing was changed)\n")
+    print(fmt_table(rows, ["convention", "found", "tools it unlocks"]))
+    samples = []
+    for name, found, _ in conv:
+        if found:
+            ex = ", ".join(sorted(found)[:4])
+            samples.append(f"  {name.split(' (')[0]}: {ex}"
+                           + (" ..." if len(found) > 4 else ""))
+    if samples:
+        print("\nExamples read from the drawing:")
+        print("\n".join(samples))
+    print(f"\nLayers in drawing: {nlayers}. The ~45 layer-analysis, drawing-QA "
+          "and calculator tools work on ANY drawing regardless of the above.")
+    print(f"\nConventions present: {present}/9")
+    if present == 0:
+        print("Verdict: no standard tags found -- the structural takeoff tools "
+              "won't auto-read this drawing. Layer/QA/calculator tools still work.")
+    elif present >= 6:
+        print("Verdict: STRONG -- this drawing follows the conventions; the "
+              "structural takeoff tools will work well.")
+    else:
+        print("Verdict: PARTIAL -- the tools for the ticked conventions will "
+              "work; the rest need their tags added or a manual calculator.")
+
+
 def cmd_dxf_diff(args):
     """Compare two drawings / revisions: what was added, removed or changed.
     Give two buildings (--building A --other B) or two file paths. Reports
@@ -3367,6 +3445,7 @@ def build_parser():
         ("blocks", cmd_blocks, "block (INSERT) counts"),
         ("schedule", cmd_schedule, "door/window/opening schedule"),
         ("hatch", cmd_hatch, "hatch (finish) area per layer"),
+        ("drawing-check", cmd_drawing_check, "which conventions/tools work on this drawing"),
         ("extents", cmd_extents, "drawing extents / sheet size"),
         ("purge", cmd_purge, "report empty/junk layers"),
     ]:
