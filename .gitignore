@@ -43,3 +43,5 @@ boq/uploads/
 test_quote*
 quote_p*.png
 quote_scanned.pdf
+
+rates.json

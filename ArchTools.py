@@ -104,6 +104,27 @@ DEFAULT_LEVELS = {
 FLOOR_ORDER = ["GROUND", "FIRST", "SECOND", "THIRD", "FOURTH", "TERRACE"]
 
 
+# Rate library: item -> {unit, rate in Rs}. Ships with rough Indian 2024-25
+# ballpark rates the architect edits per city/year (rates drift -- this is a
+# knob, never hardcoded into a number). First run writes rates.json into the
+# data dir so edits persist and survive app upgrades, like project.json.
+# Items whose keys match the auto-takeoff output get priced automatically;
+# the rest sit in the file for manual/future lines.
+DEFAULT_RATES = {
+    "RCC concrete (columns)":  {"unit": "m3",    "rate": 7500},
+    "RCC concrete (slab)":     {"unit": "m3",    "rate": 7000},
+    "Footing concrete":        {"unit": "m3",    "rate": 6500},
+    "Reinforcement steel":     {"unit": "tonne", "rate": 75000},
+    "Excavation":              {"unit": "m3",    "rate": 250},
+    "Doors":                   {"unit": "nos",   "rate": 9000},
+    "Windows":                 {"unit": "nos",   "rate": 7500},
+    "Brickwork 230mm":         {"unit": "m3",    "rate": 7200},
+    "Internal plaster 12mm":   {"unit": "m2",    "rate": 280},
+    "Flooring (vitrified)":    {"unit": "m2",    "rate": 1200},
+    "Paint (2 coats)":         {"unit": "m2",    "rate": 90},
+}
+
+
 # ----------------------------------------------------------------------
 # Catalog metadata  --  drives the searchable tool list in the web UI.
 # command -> (category, friendly title). Commands not listed default to
@@ -236,6 +257,9 @@ CATALOG = {
     "calc-exit-width": ("Code & compliance", "Required egress width"),
     "door-width-check": ("Code & compliance", "Flag narrow openings"),
     "room-count":      ("Industry & rooms", "Count rooms by keyword"),
+    # Estimate
+    "priced-boq":      ("Estimate", "Priced BOQ (takeoff x rate library)"),
+    "rates":           ("Estimate", "View the rate library"),
 }
 # BOQ/spreadsheet tools are parked for now -- a proper quotation module comes
 # later. The CLI commands still exist; they're just hidden from the product.
@@ -360,6 +384,31 @@ def extract_levels(msp):
 # Keeps project.json + uploads in one writable place for the packaged .exe.
 DATA_DIR = os.environ.get("AC_DATA") or os.getcwd()
 PROJECT_FILE = os.path.join(DATA_DIR, "project.json")
+RATES_FILE = os.path.join(DATA_DIR, "rates.json")
+
+
+def load_rates():
+    """Rate library from rates.json (data dir), else the built-in defaults."""
+    if os.path.isfile(RATES_FILE):
+        import json
+        try:
+            with open(RATES_FILE, encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return dict(DEFAULT_RATES)
+
+
+def _seed_rates():
+    """Write the default rate library on first run so the architect can edit it."""
+    if os.path.isfile(RATES_FILE):
+        return
+    import json
+    try:
+        with open(RATES_FILE, "w", encoding="utf-8") as f:
+            json.dump(DEFAULT_RATES, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
 
 
 def load_project(path=PROJECT_FILE):
@@ -1577,6 +1626,134 @@ def cmd_concrete(args):
         print(f"(slab: {area:,.0f} m2 x {args.thk:.0f} mm x {nfloors} floors)")
     print("Sections & storey heights are taken from the drawing -- nothing typed.")
     print("Footings / plinth / chajja: use colvol, slab, plinth-colvol, footings, chajja.")
+
+
+def _takeoff_lines(doc, msp, args):
+    """Auto-read the big-ticket takeoff quantities as (item, qty, unit) rows.
+    Geometry is read from the drawing; per-item spec values (slab/footing
+    thickness, footing depth, steel kg/m3) are documented defaults the user
+    can override. Kept isolated from the individual takeoff tools on purpose
+    so pricing can never break them."""
+    lines = []
+    levels = extract_levels(msp) or dict(DEFAULT_LEVELS)
+    seq = [f for f in FLOOR_ORDER if f in levels]
+    heights = {seq[i]: levels[seq[i + 1]] - levels[seq[i]]
+               for i in range(len(seq) - 1)}
+    box = _parse_box(getattr(args, "box", None))
+    markers, titles = _markers_titles(msp, box)
+    floor = defaultdict(Counter)
+    for x, y, tag, sz in markers:
+        nm = _floor_of(x, y, titles) if titles else (seq[0] if seq else "GROUND")
+        floor[nm][sz] += 1
+    col = 0.0
+    for nm in FLOOR_ORDER[:-1]:
+        h = heights.get(nm)
+        if h is None or nm not in floor:
+            continue
+        for sz, n in floor[nm].items():
+            col += n * _area(sz) * h
+    if col:
+        lines.append(("RCC concrete (columns)", round(col, 2), "m3"))
+
+    # Floor count: prefer the drawing's own floor-plan titles (real), fall
+    # back to the level sequence. Avoids the 6-floor default scheme inflating
+    # a drawing that only shows 4 plans.
+    ntitles = len({t[2] for t in titles})
+    nfloors = ntitles or len(seq) or 1
+    res = _largest_closed(doc, msp, getattr(args, "layer", None))
+    slab = 0.0
+    if res:
+        area, _ = res
+        slab = area * (getattr(args, "thk", 150) / 1000.0) * nfloors
+        lines.append(("RCC concrete (slab)", round(slab, 2), "m3"))
+
+    marks = _footing_markers(msp, box)
+    fconc = exc = 0.0
+    if marks:
+        by = Counter(m[3] for m in marks)
+        thk = getattr(args, "foot_thk", 450) / 1000.0
+        ws = getattr(args, "ws", 300) / 1000.0
+        D = getattr(args, "depth", 1.5)
+        for sz, n in by.items():
+            w, l = (int(v) / 1000.0 for v in sz.lower().split("x"))
+            fconc += w * l * thk * n
+            exc += (w + 2 * ws) * (l + 2 * ws) * D * n
+        lines.append(("Footing concrete", round(fconc, 2), "m3"))
+        lines.append(("Excavation", round(exc, 1), "m3"))
+
+    # ponytail: uniform steel ratio over ALL concrete -- a real design varies
+    # by member (footings ~80, columns ~150 kg/m3); tune with --steel-kg.
+    total_conc = col + slab + fconc
+    if total_conc:
+        skg = getattr(args, "steel_kg", 100)
+        lines.append(("Reinforcement steel", round(total_conc * skg / 1000.0, 3), "tonne"))
+
+    def bcount(pat):
+        r = re.compile(pat, re.I)
+        return sum(1 for e in msp
+                   if e.dxftype() == "INSERT" and r.search(e.dxf.name or ""))
+    nd, nw = bcount("door"), bcount("window|glass|vp")
+    if nd:
+        lines.append(("Doors", nd, "nos"))
+    if nw:
+        lines.append(("Windows", nw, "nos"))
+    return lines
+
+
+def cmd_priced_boq(args):
+    """Priced BOQ in one tap: quantities auto-read from the drawing x your
+    rate library = an estimate, not just a takeoff. Quantities come from the
+    drawing; rates are your editable list (rates.json). Items with no rate
+    are listed unpriced so nothing is silently dropped."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    _seed_rates()
+    rates = load_rates()
+    lines = _takeoff_lines(doc, msp, args)
+    if not lines:
+        print("No auto-readable quantities found in this drawing.")
+        print("Run 'drawing-check' to see which conventions it uses.")
+        return
+    rows, total, unpriced = [], 0.0, []
+    for item, qty, unit in lines:
+        r = rates.get(item)
+        if r and r.get("rate"):
+            amt = qty * r["rate"]
+            total += amt
+            rows.append([item, f"{qty:g}", unit, f"{r['rate']:,.0f}", f"{amt:,.0f}"])
+        else:
+            unpriced.append((item, qty, unit))
+            rows.append([item, f"{qty:g}", unit, "-", "-"])
+    print("PRICED BOQ  (quantities auto-read from the drawing)\n")
+    print(fmt_table(rows, ["item", "qty", "unit", "rate Rs", "amount Rs"]))
+    print(f"\nGRAND TOTAL: Rs {total:,.0f}")
+    # Sanity nudge: a slab reading in the thousands of m3 almost always means
+    # _largest_closed grabbed a plot/sheet boundary on a multi-sheet drawing.
+    slab_m3 = next((q for it, q, u in lines if it == "RCC concrete (slab)"), 0)
+    if slab_m3 > 2000:
+        print("\nCAUTION: slab volume looks very high -- the footprint was read "
+              "from the largest closed shape, likely a plot/sheet border. "
+              "Set --box to isolate one building, or --layer <slab layer>.")
+    if unpriced:
+        print("\nUnpriced (no rate in library -- add one in rates.json):")
+        for item, qty, unit in unpriced:
+            print(f"  {item}: {qty:g} {unit}")
+    print(f"\nRates from: {RATES_FILE}")
+    print("Quantities are from the drawing; rates are your editable list. "
+          "Spec values (slab/footing thickness, steel kg/m3) are defaults -- "
+          "change them in Advanced.")
+
+
+def cmd_rates(args):
+    """Show the rate library (edit rates.json to change rates or add items).
+    Items whose names match the priced-boq takeoff get priced automatically."""
+    _seed_rates()
+    rates = load_rates()
+    rows = [[item, r.get("unit", ""), f"{r.get('rate', 0):,.0f}"]
+            for item, r in rates.items()]
+    print("RATE LIBRARY  (Rs per unit)\n")
+    print(fmt_table(rows, ["item", "unit", "rate Rs"]))
+    print(f"\nEdit this file to change rates or add items: {RATES_FILE}")
 
 
 def cmd_colschedule(args):
@@ -3582,6 +3759,20 @@ def build_parser():
     sp.add_argument("--layer", help="slab boundary layer (else footprint)")
     sp.add_argument("--thk", type=float, default=150, help="slab thickness (mm)")
     sp.add_argument("--levels", help="FLOOR:elev,... override (metres)")
+
+    sp = add("priced-boq", cmd_priced_boq, "priced BOQ: drawing takeoff x rate library")
+    file_arg(sp)
+    sp.add_argument("--box", help="x0,y0,x1,y1 to isolate one sheet copy")
+    sp.add_argument("--layer", help="slab boundary layer (else footprint)")
+    sp.add_argument("--thk", type=float, default=150, help="slab thickness (mm)")
+    sp.add_argument("--foot-thk", dest="foot_thk", type=float, default=450,
+                    help="footing thickness (mm)")
+    sp.add_argument("--depth", type=float, default=1.5, help="excavation depth (m)")
+    sp.add_argument("--ws", type=float, default=300, help="working space each side (mm)")
+    sp.add_argument("--steel-kg", dest="steel_kg", type=float, default=100,
+                    help="reinforcement steel (kg per m3 concrete)")
+
+    sp = add("rates", cmd_rates, "view the rate library (edit rates.json to change)")
 
     # --- Slab suite (slab = auto from drawing) ---
     sp = add("slab", cmd_slab, "auto slab takeoff from the drawing")
