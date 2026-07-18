@@ -564,8 +564,8 @@ async function autofillForm(){
 function fieldHtml(p,dxfTool,id){
   if(p.type==="flag") return `<div class="field"><label>${esc(p.help||p.name)}</label>
     <select data-p="${esc(p.name)}" id="${id}"><option value="">no</option><option value="1">yes</option></select></div>`;
-  if(dxfTool&&p.name==="--layer") return `<div class="field"><label>${esc(p.help||p.name)}${p.required?' *':""}</label>
-    <select data-p="${esc(p.name)}" id="${id}" data-layerfield="1" data-custom="1"><option value="">— loading layers… —</option></select></div>`;
+  if(dxfTool&&p.name==="--layer") return `<div class="field"><label>Which layer? <span style="color:var(--faint)">(optional — Auto works)</span></label>
+    <select data-p="${esc(p.name)}" id="${id}" data-layerfield="1" data-custom="1"><option value="">✦ Auto — best guess</option></select></div>`;
   if(PRESETS[p.name]) return selField(p,PRESETS[p.name],STRICT.has(p.name),id);
   const it=(p.type==="int"||p.type==="float")?"number":"text";
   return `<div class="field"><label>${esc(p.help||p.name)}${p.required?' *':""}</label>
@@ -590,7 +590,7 @@ async function populateLayerSelects(){
   const sels=$$('#rFields select[data-layerfield]');if(!sels.length)return;
   if(CURRENT&&CURRENT.needs_building&&!ACTIVE_B){sels.forEach(s=>s.innerHTML='<option value="">(pick a drawing first)</option>');return;}
   const layers=await getLayers(ACTIVE_B);
-  const body='<option value="">— choose layer —</option>'+layers.map(l=>`<option value="${esc(l.name)}">${esc(l.name)}${l.ent?` (${l.ent})`:""}</option>`).join("")+'<option value="__custom__">✏ Custom…</option>';
+  const body='<option value="">✦ Auto — best guess</option>'+layers.map(l=>`<option value="${esc(l.name)}">${esc(l.name)}${l.ent?` (${l.ent})`:""}</option>`).join("")+'<option value="__custom__">✏ Custom…</option>';
   sels.forEach(s=>{const keep=s.value;s.innerHTML=body;if(keep)s.value=keep;});
 }
 document.addEventListener("change",e=>{const s=e.target;

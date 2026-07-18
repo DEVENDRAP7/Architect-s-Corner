@@ -749,6 +749,39 @@ def cmd_areas(args):
     print("\n(Assumes drawing units = mm. Divide differently if units differ.)")
 
 
+def _auto_layer(msp, kind="area"):
+    """Best-guess layer when the user gives none, so a tool never dead-ends
+    asking for '--layer'. kind: 'area' = most closed polylines, 'line' = most
+    line/polyline entities, 'busy' = most entities of any kind."""
+    c = Counter()
+    for e in msp:
+        lay = e.dxf.layer or ""
+        if lay in ("Defpoints",):
+            continue
+        t = e.dxftype()
+        if kind == "area":
+            if t == "LWPOLYLINE" and getattr(e, "closed", False):
+                c[lay] += 1
+        elif kind == "line":
+            if t in ("LINE", "LWPOLYLINE", "POLYLINE", "ARC"):
+                c[lay] += 1
+        else:
+            c[lay] += 1
+    return c.most_common(1)[0][0] if c else None
+
+
+def _resolve_layer(msp, args, kind="area"):
+    """Return the layer to use: the one the user chose, else an auto-pick.
+    Prints a one-line note when it auto-picks so the result stays honest."""
+    if getattr(args, "layer", None):
+        return args.layer
+    lay = _auto_layer(msp, kind)
+    if lay:
+        print(f"(auto-picked layer '{lay}' -- change it in Advanced if this "
+              f"isn't the right one)\n")
+    return lay
+
+
 def _poly_area(e):
     """Shoelace area for an LWPOLYLINE (ignores bulges)."""
     pts = [(p[0], p[1]) for p in e.get_points()]
@@ -926,6 +959,7 @@ def cmd_centroid(args):
     """
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "busy")
     xs, ys = [], []
     for e in msp:
         if (e.dxf.layer or "") != args.layer:
@@ -1163,9 +1197,9 @@ def cmd_plinth_beams(args):
     Pass --layer (plinth-beam layer); --width/--depth in mm; --steel %."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "line")
     if not args.layer:
-        print("Pass --layer (plinth-beam layer). Layers: "
-              + ", ".join(l.dxf.name for l in doc.layers))
+        print("No line geometry found to measure.")
         return
     L = 0.0
     for e in msp:
@@ -1302,9 +1336,9 @@ def cmd_chajja(args):
     (mm); --steel %. Volume = run x projection x average thickness."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "line")
     if not args.layer:
-        print("Pass --layer (chajja/sunshade layer). Layers: "
-              + ", ".join(l.dxf.name for l in doc.layers))
+        print("No line geometry found to measure.")
         return
     L = 0.0
     for e in msp:
@@ -1960,9 +1994,9 @@ def cmd_wall_area(args):
     both-sides area."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "line")
     if not args.layer:
-        print("Pass --layer (wall layer). Layers: "
-              + ", ".join(l.dxf.name for l in doc.layers))
+        print("No wall/line geometry found to measure.")
         return
     L = 0.0
     for e in msp:
@@ -2010,9 +2044,9 @@ def cmd_layer_detail(args):
     """Entity-type breakdown for ONE layer."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "busy")
     if not args.layer:
-        print("Pass --layer. Layers: "
-              + ", ".join(l.dxf.name for l in doc.layers))
+        print("This drawing has no geometry.")
         return
     c = Counter(e.dxftype() for e in msp if (e.dxf.layer or "") == args.layer)
     if not c:
@@ -2041,9 +2075,9 @@ def cmd_bbox_layer(args):
     the column or wall layer)."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "area")
     if not args.layer:
-        print("Pass --layer. Layers: "
-              + ", ".join(l.dxf.name for l in doc.layers))
+        print("This drawing has no geometry.")
         return
     xs, ys = [], []
     for e in msp:
@@ -2089,9 +2123,9 @@ def cmd_room_areas(args):
     """Area of each closed room on a layer, labelled by the nearest text."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "area")
     if not args.layer:
-        print("Pass --layer (the room-boundary layer). Layers: "
-              + ", ".join(l.dxf.name for l in doc.layers))
+        print("No closed room shapes found in this drawing.")
         return
     texts = [(s.strip(), x, y) for s, x, y, _ in all_text_entities(msp) if s.strip()]
     rooms = []
@@ -2129,8 +2163,9 @@ def cmd_layer_area(args):
     """Total closed-polyline area on ONE layer (m2)."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "area")
     if not args.layer:
-        print("Pass --layer.")
+        print("No closed shapes found in this drawing.")
         return
     tot, n = 0.0, 0
     for e in msp:
@@ -2149,8 +2184,9 @@ def cmd_layer_length(args):
     """Total line/polyline length on ONE layer (m) -- pipes, chajja, kerbs."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "line")
     if not args.layer:
-        print("Pass --layer.")
+        print("No line geometry found to measure.")
         return
     L = 0.0
     for e in msp:
@@ -2962,9 +2998,9 @@ def cmd_coving_length(args):
     on a layer (pharma epoxy coving, hospital skirting)."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
+    args.layer = _resolve_layer(msp, args, "area")
     if not args.layer:
-        print("Pass --layer (room-boundary layer). Layers: "
-              + ", ".join(l.dxf.name for l in doc.layers))
+        print("No closed shapes found in this drawing.")
         return
     tot, n = 0.0, 0
     for e in msp:
@@ -3852,7 +3888,7 @@ def build_parser():
                                   help="show top N heights")
 
     sp = add("centroid", cmd_centroid, "centre point of a layer's geometry")
-    file_arg(sp); sp.add_argument("--layer", required=True, help="layer name")
+    file_arg(sp); sp.add_argument("--layer", help="layer name (auto if omitted)")
 
     sp = add("circles", cmd_circles, "count circles + radius stats")
     file_arg(sp)
