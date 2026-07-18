@@ -2204,6 +2204,19 @@ def cmd_room_areas(args):
                 bd, lbl = d, t[:24]
         rooms.append((lbl, am))
     if not rooms:
+        # Rooms aren't drawn as closed polylines -> read them from the raw
+        # line geometry instead (flood-fill between the walls; no layers).
+        geo = _detect_rooms(msp)
+        geo = [r for r in geo if args.min <= r[0] <= args.max]
+        if geo:
+            print("Rooms read from the WALL GEOMETRY (no closed shapes, no "
+                  "layers used):\n")
+            print(fmt_table([[lbl, f"{a:,.2f}"] for a, lbl in geo[:args.limit]],
+                            ["room", "area m2"]))
+            print(f"\n{len(geo)} rooms, total {sum(a for a, _ in geo):,.1f} m2")
+            print("Newer detection -- verify room boundaries before pricing "
+                  "finishes.")
+            return
         print(f"No closed rooms on layer '{args.layer}' "
               f"between {args.min}-{args.max} m2.")
         return
@@ -2753,6 +2766,139 @@ def _detect_walls(msp):
     }
 
 
+_TAGPAT = re.compile(r"^(C|F|D|W|VP|V-?|ED|FVP)\d+$|^\d{2,5}\s*[xX]\s*\d{2,5}$"
+                     r"|^[+-]?\d+[\d.,]*$")
+
+
+def _detect_rooms(msp, cell=100.0):
+    """Rooms from raw lines -- no layers, no closed polylines needed.
+
+    Rasterise the biggest floor-plan region into `cell`-mm pixels, block every
+    pixel a LINE/LWPOLYLINE/ARC passes through (door-swing arcs seal the
+    doorway gap), flood-fill from the border to mark 'outside', then each
+    remaining pocket of free pixels is a room. Room names come from text that
+    sits INSIDE the room and doesn't look like a tag/size/number.
+    Returns [(area_m2, label)] largest-first, [] when no column grid anchors
+    the plan region."""
+    cols = _dedupe_rects(_col_rects(_all_rects(msp)))
+    cents = [(c[2], c[3]) for c in cols]
+    groups = [g for g in _cluster(cents, 12000) if len(g) >= 8]
+    if not groups:
+        return []
+    groups.sort(key=len, reverse=True)
+    gc = [cents[i] for i in groups[0]]
+    s = _median_spacing(gc) * 1000
+    if not 2500 <= s <= 11000:
+        return []
+    m = s * 0.75
+    xs = [p[0] for p in gc]; ys = [p[1] for p in gc]
+    x0, y0, x1, y1 = min(xs) - m, min(ys) - m, max(xs) + m, max(ys) + m
+
+    W = int((x1 - x0) / cell) + 2
+    Hh = int((y1 - y0) / cell) + 2
+    blocked = bytearray(W * Hh)
+
+    def block_seg(ax, ay, bx, by):
+        L = math.hypot(bx - ax, by - ay)
+        n = max(1, int(L / (cell * 0.5)))
+        for k in range(n + 1):
+            x = ax + (bx - ax) * k / n
+            y = ay + (by - ay) * k / n
+            ci = int((x - x0) / cell); cj = int((y - y0) / cell)
+            if 0 <= ci < W and 0 <= cj < Hh:
+                blocked[cj * W + ci] = 1
+
+    inb = lambda x, y: x0 <= x <= x1 and y0 <= y <= y1
+    for e in msp:
+        t = e.dxftype()
+        if t == "LINE":
+            a, b = e.dxf.start, e.dxf.end
+            if inb(a.x, a.y) or inb(b.x, b.y):
+                block_seg(a.x, a.y, b.x, b.y)
+        elif t == "LWPOLYLINE":
+            pts = [(p[0], p[1]) for p in e.get_points()]
+            if e.closed and len(pts) > 2:
+                pts = pts + [pts[0]]
+            for i in range(len(pts) - 1):
+                if inb(*pts[i]) or inb(*pts[i + 1]):
+                    block_seg(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1])
+        elif t == "ARC":
+            c = e.dxf.center
+            if not inb(c.x, c.y):
+                continue
+            r = e.dxf.radius
+            a0 = math.radians(e.dxf.start_angle)
+            a1 = math.radians(e.dxf.end_angle)
+            if a1 < a0:
+                a1 += 2 * math.pi
+            steps = max(4, int(r * (a1 - a0) / (cell * 0.5)))
+            px = py = None
+            for k in range(steps + 1):
+                th = a0 + (a1 - a0) * k / steps
+                x, y = c.x + r * math.cos(th), c.y + r * math.sin(th)
+                if px is not None:
+                    block_seg(px, py, x, y)
+                px, py = x, y
+
+    from collections import deque
+    label = [0] * (W * Hh)          # 0 free, -1 outside, >0 room id
+    dq = deque()
+    for i in range(W):
+        for j in (0, Hh - 1):
+            if not blocked[j * W + i] and label[j * W + i] == 0:
+                dq.append((i, j)); label[j * W + i] = -1
+    for j in range(Hh):
+        for i in (0, W - 1):
+            if not blocked[j * W + i] and label[j * W + i] == 0:
+                dq.append((i, j)); label[j * W + i] = -1
+    while dq:
+        i, j = dq.popleft()
+        for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            ni, nj = i + di, j + dj
+            if 0 <= ni < W and 0 <= nj < Hh and not blocked[nj * W + ni] \
+                    and label[nj * W + ni] == 0:
+                label[nj * W + ni] = -1
+                dq.append((ni, nj))
+
+    rooms = []                       # (area, set-of-cells) via second fill
+    rid = 0
+    cellmap = {}                     # (i,j) -> rid
+    for j in range(Hh):
+        for i in range(W):
+            if not blocked[j * W + i] and label[j * W + i] == 0:
+                rid += 1
+                n_cells = 0
+                dq = deque([(i, j)])
+                label[j * W + i] = rid
+                while dq:
+                    ci, cj = dq.popleft()
+                    n_cells += 1
+                    cellmap[(ci, cj)] = rid
+                    for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        ni, nj = ci + di, cj + dj
+                        if 0 <= ni < W and 0 <= nj < Hh \
+                                and not blocked[nj * W + ni] \
+                                and label[nj * W + ni] == 0:
+                            label[nj * W + ni] = rid
+                            dq.append((ni, nj))
+                rooms.append([rid, n_cells * (cell / 1000.0) ** 2])
+
+    # name rooms from text that lands inside them (skip tag-like text)
+    names = {}
+    for stxt, tx, ty, _ in all_text_entities(msp):
+        stxt = stxt.strip()
+        if not stxt or _TAGPAT.match(stxt.split("\n")[0].strip()):
+            continue
+        ci = int((tx - x0) / cell); cj = int((ty - y0) / cell)
+        r = cellmap.get((ci, cj))
+        if r and r not in names and re.search(r"[A-Za-z]{2,}", stxt):
+            names[r] = stxt.split("\n")[0][:26]
+
+    out = [(a, names.get(r, "(unnamed)")) for r, a in rooms if 1.5 <= a <= 1000]
+    out.sort(reverse=True)
+    return out
+
+
 def _footing_rects(rects, lo=700, hi=4000, aspect=2.2):
     """Big squarish rectangles -- footing candidates (bigger than columns)."""
     return [r for r in rects
@@ -2836,6 +2982,13 @@ def cmd_scan(args):
               f"({wd['n']} walls; mostly {top})")
         print("  Walls are read as parallel line-pairs -- newer detection, "
               "verify against the plan before pricing brickwork/plaster.")
+    rm = _detect_rooms(msp)
+    if rm:
+        named = [f"{lbl} {a:,.0f}" for a, lbl in rm[:4] if lbl != "(unnamed)"]
+        print(f"\nRooms (enclosed spaces on this plan): {len(rm)}, "
+              f"total {sum(a for a, _ in rm):,.0f} m2"
+              + (f"  (largest: {'; '.join(named)})" if named else ""))
+        print("  Full room-by-room table: the 'room-areas' tool.")
     # honesty grade
     std = {(230, 230), (230, 300), (300, 300), (300, 450), (450, 450),
            (450, 600), (525, 525), (600, 600), (600, 750), (750, 750)}
