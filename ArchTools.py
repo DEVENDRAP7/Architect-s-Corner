@@ -1596,12 +1596,26 @@ def cmd_foundation(args):
     msp = doc.modelspace()
     box = _parse_box(getattr(args, "box", None))
     marks = _footing_markers(msp, box)
-    if not marks:
-        print("No 'Fn / WxL' footing markers found in this drawing.")
-        print("Fallbacks: 'footings --layer <name>' to count shapes, then")
-        print("check the structural drawing for footing sizes.")
-        return
-    by = Counter(m[3] for m in marks)
+    geo_note = ""
+    if marks:
+        by = Counter(m[3] for m in marks)
+    else:
+        # No F-tags -> try to read footings from the geometry (big rectangles
+        # on a grid that matches the columns). Conservative: declines instead
+        # of counting door/window leaves or panels.
+        fd = _detect_footings(msp)
+        if not fd.get("ok"):
+            print("No 'Fn / WxL' footing markers, and no clear footing grid in "
+                  "the geometry.")
+            print("(Big 1-2 m rectangles that don't line up with the column grid "
+                  "are treated as")
+            print("door/window leaves or panels, not footings.) Tag footings "
+                  "F1 + 1800x1800, or")
+            print("check the foundation plan.")
+            return
+        by = Counter({f"{w}x{h}": n for (w, h), n in fd["sizes"].items()})
+        geo_note = (f"(footings read from GEOMETRY -- {sum(by.values())} on a "
+                    f"{fd['grid']:.1f} m grid, no tags/layers)\n")
     thk = args.thk / 1000.0
     ws = args.ws / 1000.0
     off = 0.1  # PCC offset beyond footing edge (m)
@@ -1620,7 +1634,11 @@ def cmd_foundation(args):
     steel = conc * 7850 * args.steel / 100.0
     backfill = exc - conc - pcc
     print(f"FOUNDATION TAKEOFF  (auto from drawing -- {len(by)} sizes, "
-          f"{sum(by.values())} footings)\n")
+          f"{sum(by.values())} footings)")
+    if geo_note:
+        print(geo_note)
+    else:
+        print()
     print(fmt_table(rows, ["size (mm)", "nos", "concrete m3", "excavation m3"]))
     print(f"\nFooting concrete ({args.thk:.0f} mm thick) : {conc:,.2f} m3")
     print(f"Steel ({args.steel}%)                : {steel:,.0f} kg "
@@ -2608,6 +2626,46 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
         "schedule": rep["sizes"],
         "total_columns": len(cols),
     }
+
+
+def _footing_rects(rects, lo=700, hi=4000, aspect=2.2):
+    """Big squarish rectangles -- footing candidates (bigger than columns)."""
+    return [r for r in rects
+            if lo <= r[0] <= hi and lo <= r[1] <= hi
+            and max(r[0], r[1]) / min(r[0], r[1]) < aspect]
+
+
+def _detect_footings(msp):
+    """Footings from geometry: big rectangles on a structural grid that MATCHES
+    the column grid. Deliberately conservative -- door/window leaves and wall
+    panels are also 1-2 m rectangles, so we only accept a grid that lines up
+    with the columns, and otherwise decline rather than invent footings."""
+    foot = _dedupe_rects(_footing_rects(_all_rects(msp)))
+    if len(foot) < 4:
+        return {"ok": False}
+    cents = [(c[2], c[3]) for c in foot]
+    groups = [g for g in _cluster(cents, 12000) if len(g) >= 6]
+    if not groups:
+        return {"ok": False}
+    groups.sort(key=len, reverse=True)
+    bldg = _detect_geometry(msp)
+    col_grid, col_fp = bldg.get("grid", 0), bldg.get("footprint", 0)
+    for g in groups:
+        gc = [cents[i] for i in g]
+        grid = _median_spacing(gc)
+        fp = _hull_area(gc)
+        if not 2.5 <= grid <= 11:
+            continue
+        # Footings sit one-per-column: same grid spacing AND spread under the
+        # whole building. A tight patch at the wrong spacing is a detail block
+        # or door/window leaves, not footings -> reject.
+        if col_grid and not 0.7 * col_grid <= grid <= 1.4 * col_grid:
+            continue
+        if col_fp and fp < 0.5 * col_fp:
+            continue
+        return {"ok": True, "n": len(g), "grid": grid, "footprint": fp,
+                "sizes": Counter((round(foot[i][0]), round(foot[i][1])) for i in g)}
+    return {"ok": False}
 
 
 def cmd_scan(args):
