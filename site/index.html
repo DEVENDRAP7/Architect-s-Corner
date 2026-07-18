@@ -287,6 +287,19 @@
     .stats{gap:30px}.acc{gap:24px}}
   @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
 </style>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
+<script>
+try{firebase.initializeApp({
+  apiKey:"AIzaSyAbFGRMbjivnxtO4qcYprULJuZCxhxlc8I",
+  authDomain:"architects-corner-web.firebaseapp.com",
+  databaseURL:"https://architects-corner-web-default-rtdb.firebaseio.com",
+  projectId:"architects-corner-web",
+  storageBucket:"architects-corner-web.firebasestorage.app",
+  messagingSenderId:"1057466098671",
+  appId:"1:1057466098671:web:eb9bcab23d99ba7b880c1a"
+});}catch(e){}
+</script>
 </head>
 <body>
 <div class="ambient"><i></i><i></i></div>
@@ -608,48 +621,57 @@ const sio=new IntersectionObserver(es=>es.forEach(en=>{
 }),{threshold:.4});
 document.querySelectorAll(".stats b").forEach(b=>sio.observe(b));
 
-/* =====================================================================
-   LIVE ANALYTICS — real backend (site_server.py). Degrades silently if
-   the page is opened as a plain file with no server.
-   ===================================================================== */
-const API=location.origin.startsWith("http")?"":"none";
+/* api() kept for contact + demo, which still hit the local backend when
+   present and fall back (mailto / canned output) on the static site. */
 async function api(path,body){
   const r=await fetch(path,body?{method:"POST",headers:{"Content-Type":"application/json"},
     body:JSON.stringify(body)}:{});
   if(!r.ok)throw 0;return r.json();
 }
-let SID=sessionStorage.getItem("ac_sid");
-if(!SID){SID=Math.random().toString(36).slice(2)+Date.now().toString(36);
-  sessionStorage.setItem("ac_sid",SID);}
 
-(async()=>{
-  try{
-    /* register the visit (unique = first time this browser) */
-    const first=!localStorage.getItem("ac_seen");
-    localStorage.setItem("ac_seen","1");
-    await api("/api/visit",{new:first});
-    /* heartbeat -> watching-now */
-    const beatEl=$("#liveN"),badge=$("#liveBadge");
-    async function beat(){try{
-      const d=await api("/api/beat",{sid:SID});
-      beatEl.textContent=d.active;badge.style.display="inline-flex";
-    }catch(e){}}
-    beat();setInterval(beat,10000);
-    /* stats panel */
-    const sec=$("#livestats");
-    async function stats(){try{
-      const s=await api("/api/stats");
-      sec.style.display="block";
-      $("#lsActive").textContent=s.active;
-      $("#lsToday").textContent=s.today;
-      $("#lsTotal").textContent=s.total;
-      $("#lsUnique").textContent=s.unique;
-      $("#lsPeak").textContent=s.peak;
-      $("#lsDemo").textContent=s.demo_runs;
-      $("#demoRuns").textContent=s.demo_runs+" simulations run on this page so far";
-    }catch(e){}}
-    stats();setInterval(stats,6000);
-  }catch(e){/* no backend — page still works as a plain file */}
+/* =====================================================================
+   LIVE ANALYTICS via Firebase Realtime DB — works on the static GitHub
+   Pages site (no server of ours). Degrades silently if the SDK is blocked.
+   Dev machines (localhost) are skipped so the public numbers stay real.
+   ponytail: public unauthenticated counters -- inflatable vanity metric,
+   fine for social proof, not for anything load-bearing.
+   ===================================================================== */
+function bumpDemoRuns(){try{firebase.database().ref("stats/demo_runs")
+  .transaction(n=>(n||0)+1);}catch(e){}}
+(function(){
+  let db; try{db=firebase.database();}catch(e){return;}
+  const isLocal=/^(localhost|127\.|0\.0\.0\.0$)/.test(location.hostname);
+  const today=new Date().toISOString().slice(0,10);
+  const bump=p=>db.ref(p).transaction(n=>(n||0)+1);
+
+  if(!isLocal){
+    bump("stats/total");
+    bump("stats/days/"+today);
+    if(!localStorage.getItem("ac_seen")){localStorage.setItem("ac_seen","1");bump("stats/unique");}
+  }
+
+  /* presence -> watching now (RTDB onDisconnect, free + live) */
+  const me=db.ref("presence").push();
+  db.ref(".info/connected").on("value",s=>{if(s.val()){me.onDisconnect().remove();me.set(true);}});
+  const badge=$("#liveBadge");
+  db.ref("presence").on("value",s=>{
+    const n=s.numChildren();
+    if($("#liveN"))$("#liveN").textContent=n;
+    if(badge)badge.style.display="inline-flex";
+    if($("#lsActive"))$("#lsActive").textContent=n;
+    db.ref("stats/peak").transaction(p=>Math.max(p||0,n));
+  });
+
+  /* live stat tiles */
+  const sec=$("#livestats"); if(sec)sec.style.display="block";
+  const bind=(p,el)=>{if(el)db.ref(p).on("value",s=>el.textContent=s.val()||0);};
+  bind("stats/total",$("#lsTotal"));
+  bind("stats/unique",$("#lsUnique"));
+  bind("stats/days/"+today,$("#lsToday"));
+  bind("stats/peak",$("#lsPeak"));
+  bind("stats/demo_runs",$("#lsDemo"));
+  db.ref("stats/demo_runs").on("value",s=>{if($("#demoRuns"))
+    $("#demoRuns").textContent=(s.val()||0)+" simulations run on this page so far";});
 })();
 
 /* =====================================================================
@@ -741,7 +763,7 @@ document.querySelectorAll("#demoTools button").forEach(b=>{
 $("#simBtn").addEventListener("click",async()=>{
   const btn=$("#simBtn"),out=$("#demoOut"),box=out.closest(".paperbox");
   btn.disabled=true;btn.textContent="⏳ Reading the sample drawing…";
-  box.classList.add("scanning");out.textContent="";
+  box.classList.add("scanning");out.textContent="";bumpDemoRuns();
   try{
     const d=await api("/api/demo",{tool:DEMO_TOOL});
     box.classList.remove("scanning");
