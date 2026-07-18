@@ -2635,9 +2635,7 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
     for g in groups:
         gcols = [cols[i] for i in g]
         gcents = [cents[i] for i in g]
-        cx = sum(p[0] for p in gcents) / len(gcents)
-        cy = sum(p[1] for p in gcents) / len(gcents)
-        kind, name = _nearest_view(titles, cx, cy)
+        kind, name = _classify_cluster(msp, titles, gcents)
         clusters.append({
             "n": len(gcols),
             "sizes": Counter((round(w), round(h)) for w, h, _, _ in gcols),
@@ -2724,11 +2722,63 @@ def _view_titles(msp):
 
 
 def _nearest_view(titles, cx, cy):
-    """(kind, name) of the view title nearest a cluster centroid."""
+    """(kind, name, distance) of the view title nearest a cluster centroid."""
     if not titles:
-        return None, None
+        return None, None, None
     t = min(titles, key=lambda t: (t[0] - cx) ** 2 + (t[1] - cy) ** 2)
-    return t[2], t[3]
+    return t[2], t[3], math.hypot(t[0] - cx, t[1] - cy)
+
+
+_LVLTEXT = re.compile(r"LVL|\bFFL\b|^\+?\d+\.\d{2}$")
+
+
+def _geo_view(msp, box):
+    """Classify a region by LOOKING at it, the way a human reads a drawing
+    with no labels: door swings and sanitary fixtures only exist in PLANS;
+    stacked level annotations (+3.50, LVL) mark elevations/sections.
+    Returns 'plan', 'elevation' (any non-plan vertical view), or None."""
+    x0, y0, x1, y1 = box
+    inb = lambda x, y: x0 <= x <= x1 and y0 <= y <= y1
+    doors = arcs = lvls = 0
+    for e in msp:
+        t = e.dxftype()
+        if t == "INSERT":
+            try:
+                p = e.dxf.insert
+            except Exception:
+                continue
+            nm = (e.dxf.name or "").lower()
+            if inb(p.x, p.y) and any(k in nm for k in
+                                     ("door", "wc", "basin", "urinal", "sink")):
+                doors += 1
+        elif t == "ARC":
+            c = e.dxf.center
+            if inb(c.x, c.y) and 400 <= e.dxf.radius <= 1600:
+                if 55 <= (e.dxf.end_angle - e.dxf.start_angle) % 360 <= 125:
+                    arcs += 1
+    if doors >= 1 or arcs >= 2:
+        return "plan"
+    for s, x, y, _ in all_text_entities(msp):
+        if inb(x, y) and _LVLTEXT.search(s.strip().upper()[:30]):
+            lvls += 1
+            if lvls >= 3:
+                return "elevation"
+    return None
+
+
+def _classify_cluster(msp, titles, gcents):
+    """View kind for one column cluster: a NEARBY title wins; otherwise look
+    at the geometry itself (doors/arcs/level marks). A title further away than
+    the cluster's own size belongs to some other view -- ignore it."""
+    xs = [p[0] for p in gcents]; ys = [p[1] for p in gcents]
+    cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+    diag = math.hypot(max(xs) - min(xs), max(ys) - min(ys)) or 1.0
+    kind, name, dist = _nearest_view(titles, cx, cy)
+    if kind and dist <= 1.2 * diag + 8000:
+        return kind, name
+    m = 5000
+    box = (min(xs) - m, min(ys) - m, max(xs) + m, max(ys) + m)
+    return _geo_view(msp, box), None
 
 
 def _best_plan_cluster(msp):
@@ -2747,12 +2797,9 @@ def _best_plan_cluster(msp):
         s = _median_spacing(gc) * 1000
         if not 2500 <= s <= 11000:
             continue
-        if titles:
-            cx = sum(p[0] for p in gc) / len(gc)
-            cy = sum(p[1] for p in gc) / len(gc)
-            kind, _n = _nearest_view(titles, cx, cy)
-            if kind not in (None, "plan"):
-                continue
+        kind, _n = _classify_cluster(msp, titles, gc)
+        if kind not in (None, "plan"):
+            continue
         return gc, s
     return None
 
