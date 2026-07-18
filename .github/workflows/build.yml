@@ -34,6 +34,7 @@ jobs:
           pyinstaller --noconfirm --onefile --name ArchitectsCorner `
             --add-data "web;web" --add-data "plugins;plugins" `
             --collect-all ezdxf --collect-submodules uvicorn `
+            --collect-submodules scipy.spatial --hidden-import scipy.spatial `
             --hidden-import multipart --hidden-import multipart.multipart `
             launch.py
 

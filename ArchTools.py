@@ -2515,6 +2515,38 @@ def _hull_area(pts):
     return abs(a) / 2 / 1e6
 
 
+def _concave_area(cents, alpha_factor=1.7):
+    """Footprint (m2) as a concave hull (alpha shape) of the column centres.
+
+    Delaunay-triangulate the columns and drop triangles whose longest edge is
+    more than ~alpha_factor x the grid spacing: those bridge a gap, so a notch
+    in an L / U / T / courtyard plan is carved out instead of filled. A convex
+    hull over-reads such plans (measured ~17% on a sharp L); this respects them.
+    A convex building triangulates fully -> equals the convex hull. Falls back
+    to the convex hull when SciPy isn't present (e.g. a minimal build)."""
+    if len(cents) < 4:
+        return _hull_area(cents)
+    try:
+        import numpy as _np
+        from scipy.spatial import Delaunay as _Delaunay
+    except Exception:
+        return _hull_area(cents)
+    pts = _np.array(cents, float)
+    try:
+        tri = _Delaunay(pts)
+    except Exception:
+        return _hull_area(cents)
+    s = _median_spacing(cents) * 1000.0
+    thr = alpha_factor * s if s > 0 else 1e18
+    area = 0.0
+    for sx in tri.simplices:
+        a, b, c = pts[sx]
+        if max(_np.hypot(*(a-b)), _np.hypot(*(b-c)), _np.hypot(*(c-a))) > thr:
+            continue
+        area += abs((b[0]-a[0])*(c[1]-a[1]) - (c[0]-a[0])*(b[1]-a[1])) / 2
+    return area / 1e6 or _hull_area(cents)
+
+
 def _hull_perimeter(pts):
     """Convex-hull perimeter (m) of centre points (mm)."""
     pts = sorted(set(pts))
@@ -2591,7 +2623,7 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
         clusters.append({
             "n": len(gcols),
             "sizes": Counter((round(w), round(h)) for w, h, _, _ in gcols),
-            "footprint": _hull_area(gcents),
+            "footprint": _concave_area(gcents),
             "perimeter": _hull_perimeter(gcents),
             "grid": _median_spacing(gcents),
         })

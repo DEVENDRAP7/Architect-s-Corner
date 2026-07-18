@@ -1,4 +1,6 @@
 ezdxf
+numpy
+scipy
 fastapi
 uvicorn
 python-multipart
