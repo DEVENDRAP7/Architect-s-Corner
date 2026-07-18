@@ -2660,6 +2660,99 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
     }
 
 
+def _detect_walls(msp):
+    """Wall run (m) from raw lines -- no layers, no tags.
+
+    A wall in plan = two parallel lines a wall-thickness (75-300 mm) apart.
+    The naive version of this counted schedule tables, dimension ticks and
+    every sheet at once (10 km of 'walls'); three guards make it sane:
+      1. only lines INSIDE the biggest floor-plan's column region,
+      2. only LINE/LWPOLYLINE entities (dims/hatch/text never counted),
+      3. collinear segments merged into runs first, each run paired once.
+    Returns {} when there's no column grid to anchor the region."""
+    cols = _dedupe_rects(_col_rects(_all_rects(msp)))
+    cents = [(c[2], c[3]) for c in cols]
+    groups = [g for g in _cluster(cents, 12000) if len(g) >= 8]
+    if not groups:
+        return {}
+    groups.sort(key=len, reverse=True)
+    gc = [cents[i] for i in groups[0]]
+    s = _median_spacing(gc) * 1000
+    if not 2500 <= s <= 11000:
+        return {}
+    m = s * 0.75
+    xs = [p[0] for p in gc]; ys = [p[1] for p in gc]
+    box = (min(xs) - m, min(ys) - m, max(xs) + m, max(ys) + m)
+
+    H, V = [], []          # H: (y, xlo, xhi)   V: (x, ylo, yhi)
+    def add(x1, y1, x2, y2):
+        if not (box[0] <= x1 <= box[2] and box[1] <= y1 <= box[3] and
+                box[0] <= x2 <= box[2] and box[1] <= y2 <= box[3]):
+            return
+        dx, dy = abs(x2 - x1), abs(y2 - y1)
+        if math.hypot(dx, dy) < 200:
+            return
+        if dy <= 2 and dx > 2:
+            H.append((y1, min(x1, x2), max(x1, x2)))
+        elif dx <= 2 and dy > 2:
+            V.append((x1, min(y1, y2), max(y1, y2)))
+    for e in msp:
+        t = e.dxftype()
+        if t == "LINE":
+            a, b = e.dxf.start, e.dxf.end
+            add(a.x, a.y, b.x, b.y)
+        elif t == "LWPOLYLINE":
+            pts = [(p[0], p[1]) for p in e.get_points()]
+            if e.closed and len(pts) > 2:
+                pts = pts + [pts[0]]
+            for i in range(len(pts) - 1):
+                add(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1])
+
+    def merge(lines):
+        out = []
+        for pos, lo, hi in sorted(lines):
+            for i, (p2, l2, h2) in enumerate(out):
+                if abs(pos - p2) <= 2 and lo <= h2 + 150 and hi >= l2 - 150:
+                    out[i] = (p2, min(lo, l2), max(hi, h2))
+                    break
+            else:
+                out.append((pos, lo, hi))
+        return out
+
+    def pair(lines):
+        lines = sorted(merge(lines))
+        used, walls = set(), []
+        for i, (pi, lo, hi) in enumerate(lines):
+            if i in used:
+                continue
+            best, bj = None, None
+            for j in range(i + 1, len(lines)):
+                if j in used:
+                    continue
+                pj, lo2, hi2 = lines[j]
+                gap = pj - pi
+                if gap < 75:
+                    continue
+                if gap > 300:
+                    break
+                if min(hi, hi2) - max(lo, lo2) > 400 and (best is None or gap < best):
+                    best, bj = gap, j
+            if bj is not None:
+                pj, lo2, hi2 = lines[bj]
+                walls.append((min(hi, hi2) - max(lo, lo2), best))
+                used.add(i); used.add(bj)
+        return walls
+
+    walls = pair(H) + pair(V)
+    if not walls:
+        return {}
+    return {
+        "run": sum(w[0] for w in walls) / 1000.0,
+        "n": len(walls),
+        "thickness": Counter(round(w[1] / 10) * 10 for w in walls),
+    }
+
+
 def _footing_rects(rects, lo=700, hi=4000, aspect=2.2):
     """Big squarish rectangles -- footing candidates (bigger than columns)."""
     return [r for r in rects
@@ -2736,6 +2829,13 @@ def cmd_scan(args):
     rows = [[f"{w} x {h}", n] for (w, h), n in d["schedule"].most_common(12)]
     print("COLUMN SCHEDULE (sizes read from the rectangles themselves)")
     print(fmt_table(rows, ["section (mm)", "count on the plan"]))
+    wd = _detect_walls(msp)
+    if wd:
+        top = ", ".join(f"{t} mm x{c}" for t, c in wd["thickness"].most_common(3))
+        print(f"\nWall run (detected on this plan): ~{wd['run']:,.0f} m "
+              f"({wd['n']} walls; mostly {top})")
+        print("  Walls are read as parallel line-pairs -- newer detection, "
+              "verify against the plan before pricing brickwork/plaster.")
     # honesty grade
     std = {(230, 230), (230, 300), (300, 300), (300, 450), (450, 450),
            (450, 600), (525, 525), (600, 600), (600, 750), (750, 750)}
