@@ -1127,8 +1127,16 @@ def _plinth_height(levels, override):
 
 
 def _largest_closed(doc, msp, layer=None):
-    """(area m2, perimeter m) of the largest plausible closed polyline,
-    skipping a sheet-border-sized shape. Optionally restrict to a layer."""
+    """(area m2, perimeter m) of the building footprint.
+
+    When no specific layer is asked for, prefer the GEOMETRY footprint (the
+    hull the columns enclose) -- it's immune to a plot/sheet border or a stray
+    entity far away, which is what used to inflate this to absurd numbers. Falls
+    back to the largest plausible closed polyline (old behaviour)."""
+    if not layer:
+        g = _detect_geometry(msp)
+        if g.get("floor_count") and g["footprint"] > 0 and g.get("perimeter"):
+            return (g["footprint"], g["perimeter"])
     cands = []
     for e in msp:
         if e.dxftype() != "LWPOLYLINE" or not e.closed:
@@ -2461,6 +2469,29 @@ def _hull_area(pts):
     return abs(a) / 2 / 1e6
 
 
+def _hull_perimeter(pts):
+    """Convex-hull perimeter (m) of centre points (mm)."""
+    pts = sorted(set(pts))
+    if len(pts) < 3:
+        return 0.0
+
+    def cross(o, a, b):
+        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+
+    lower, upper = [], []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    poly = lower[:-1] + upper[:-1]
+    return sum(math.dist(poly[i], poly[(i + 1) % len(poly)])
+               for i in range(len(poly))) / 1000.0
+
+
 def _median_spacing(cents):
     """Median nearest-neighbour distance (m) -- the typical column grid."""
     sp = []
@@ -2515,6 +2546,7 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
             "n": len(gcols),
             "sizes": Counter((round(w), round(h)) for w, h, _, _ in gcols),
             "footprint": _hull_area(gcents),
+            "perimeter": _hull_perimeter(gcents),
             "grid": _median_spacing(gcents),
         })
     if not clusters:
@@ -2543,6 +2575,7 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
         "floor_count": len(floors),
         "columns_per_floor": int(sum(c["n"] for c in floors) / len(floors)),
         "footprint": fpts[len(fpts) // 2],     # median floor footprint
+        "perimeter": rep["perimeter"],
         "grid": rep["grid"],
         "schedule": rep["sizes"],
         "total_columns": len(cols),
