@@ -189,6 +189,7 @@ CATALOG = {
     "wall-area":   ("Finishes & quantities", "Wall area (plaster/paint)"),
     "layer-length": ("Finishes & quantities", "Length on one layer (pipe/chajja)"),
     # Drawing QA
+    "scan":        ("Drawing QA", "One-tap scan (no tags/layers needed)"),
     "drawing-check": ("Drawing QA", "Which tools will work on this drawing"),
     "qa-report":   ("Drawing QA", "Drawing health report (find errors)"),
     "dxf-diff":    ("Drawing QA", "Compare two drawings / revisions"),
@@ -1630,43 +1631,39 @@ def cmd_concrete(args):
 
 def _takeoff_lines(doc, msp, args):
     """Auto-read the big-ticket takeoff quantities as (item, qty, unit) rows.
-    Geometry is read from the drawing; per-item spec values (slab/footing
-    thickness, footing depth, steel kg/m3) are documented defaults the user
-    can override. Kept isolated from the individual takeoff tools on purpose
-    so pricing can never break them."""
+
+    Columns and the footprint come from the GEOMETRY engine (rectangles +
+    clustering) -- no tags, no layers, no manual box. Spec values that a
+    drawing can't hold (floor height, mix, footing depth, steel kg/m3) use
+    documented defaults, overridable in Advanced. Kept isolated from the
+    single-tool commands so pricing can never break them."""
     lines = []
-    levels = extract_levels(msp) or dict(DEFAULT_LEVELS)
-    seq = [f for f in FLOOR_ORDER if f in levels]
-    heights = {seq[i]: levels[seq[i + 1]] - levels[seq[i]]
-               for i in range(len(seq) - 1)}
-    box = _parse_box(getattr(args, "box", None))
-    markers, titles = _markers_titles(msp, box)
-    floor = defaultdict(Counter)
-    for x, y, tag, sz in markers:
-        nm = _floor_of(x, y, titles) if titles else (seq[0] if seq else "GROUND")
-        floor[nm][sz] += 1
-    col = 0.0
-    for nm in FLOOR_ORDER[:-1]:
-        h = heights.get(nm)
-        if h is None or nm not in floor:
-            continue
-        for sz, n in floor[nm].items():
-            col += n * _area(sz) * h
+    d = _detect_geometry(msp)
+    nfloors = d["floor_count"] or 1
+
+    # Floor-to-floor height: real level marks if the drawing has them, else a
+    # documented default (the one value that truly isn't in an early drawing).
+    levels = extract_levels(msp)
+    fh = getattr(args, "floor_height", None) or 3.5
+    if levels:
+        seq = [f for f in FLOOR_ORDER if f in levels]
+        hs = [levels[seq[i + 1]] - levels[seq[i]] for i in range(len(seq) - 1)]
+        if hs:
+            fh = sum(hs) / len(hs)
+
+    # Column concrete = section area x height, summed over the detected
+    # schedule, times the number of floors. Sizes are the rectangle sizes.
+    col_area = sum((w / 1000.0) * (h / 1000.0) * n
+                   for (w, h), n in d["schedule"].items())
+    col = col_area * fh * nfloors
     if col:
         lines.append(("RCC concrete (columns)", round(col, 2), "m3"))
 
-    # Floor count: prefer the drawing's own floor-plan titles (real), fall
-    # back to the level sequence. Avoids the 6-floor default scheme inflating
-    # a drawing that only shows 4 plans.
-    ntitles = len({t[2] for t in titles})
-    nfloors = ntitles or len(seq) or 1
-    res = _largest_closed(doc, msp, getattr(args, "layer", None))
-    slab = 0.0
-    if res:
-        area, _ = res
-        slab = area * (getattr(args, "thk", 150) / 1000.0) * nfloors
+    slab = d["footprint"] * (getattr(args, "thk", 150) / 1000.0) * nfloors
+    if slab:
         lines.append(("RCC concrete (slab)", round(slab, 2), "m3"))
 
+    box = _parse_box(getattr(args, "box", None))
     marks = _footing_markers(msp, box)
     fconc = exc = 0.0
     if marks:
@@ -2329,6 +2326,210 @@ def cmd_qa_report(args):
           f"Issues found: {total}")
     print("Verdict: " + ("CLEAN — no obvious drawing errors." if total == 0
           else "Attention — review the counts above in AutoCAD."))
+
+
+# ======================================================================
+# Geometry engine  --  read a drawing with NO tags and NO layers.
+# ----------------------------------------------------------------------
+# The takeoff tools historically needed tagged text (C1 + 750x750), floor
+# titles and clean layers. Real early-stage drawings have none of that: a
+# column is just a small rectangle drawn to scale, walls are lines, and one
+# DXF often carries several floor-plan sheets side by side. This engine reads
+# the SHAPES instead of the labels: a column's section is the size of its
+# rectangle, the grid is the spacing of their centres, and the separate sheets
+# are found by spatially clustering the columns. Nothing typed, nothing tagged.
+# ======================================================================
+def _all_rects(msp):
+    """Every closed 4-5 point polyline as (w, h, cx, cy) in drawing units."""
+    out = []
+    for e in msp:
+        if e.dxftype() == "LWPOLYLINE" and e.closed:
+            pts = [(p[0], p[1]) for p in e.get_points()]
+            if 4 <= len(pts) <= 5:
+                xs = [p[0] for p in pts]
+                ys = [p[1] for p in pts]
+                w, h = max(xs) - min(xs), max(ys) - min(ys)
+                if w > 0 and h > 0:
+                    out.append((w, h, (max(xs)+min(xs))/2, (max(ys)+min(ys))/2))
+    return out
+
+
+def _col_rects(rects, lo=200, hi=1000, aspect=3.0):
+    """Rectangles that look like column sections: plausible size, not a sliver."""
+    return [r for r in rects
+            if lo <= r[0] <= hi and lo <= r[1] <= hi
+            and max(r[0], r[1]) / min(r[0], r[1]) < aspect]
+
+
+def _cluster(points, thresh):
+    """Union-find clustering: connect points within `thresh` units. Grid-bucketed
+    so it stays roughly O(n) instead of O(n^2). Returns list of index lists."""
+    n = len(points)
+    parent = list(range(n))
+
+    def find(a):
+        while parent[a] != a:
+            parent[a] = parent[parent[a]]
+            a = parent[a]
+        return a
+
+    buckets = defaultdict(list)
+    for i, (x, y) in enumerate(points):
+        buckets[(int(x // thresh), int(y // thresh))].append(i)
+    for (bx, by), idxs in buckets.items():
+        neigh = []
+        for dx in (-1, 0, 1):
+            for dy in (-1, 0, 1):
+                neigh += buckets.get((bx + dx, by + dy), [])
+        for i in idxs:
+            xi, yi = points[i]
+            for j in neigh:
+                if j <= i:
+                    continue
+                xj, yj = points[j]
+                if math.hypot(xi - xj, yi - yj) <= thresh:
+                    ra, rb = find(i), find(j)
+                    if ra != rb:
+                        parent[ra] = rb
+    groups = defaultdict(list)
+    for i in range(n):
+        groups[find(i)].append(i)
+    return list(groups.values())
+
+
+def _hull_area(pts):
+    """Convex-hull area (m2) of centre points (mm) -- the footprint the columns
+    enclose, immune to a stray plot/sheet border far away."""
+    pts = sorted(set(pts))
+    if len(pts) < 3:
+        return 0.0
+
+    def cross(o, a, b):
+        return (a[0]-o[0])*(b[1]-o[1]) - (a[1]-o[1])*(b[0]-o[0])
+
+    lower, upper = [], []
+    for p in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0:
+            lower.pop()
+        lower.append(p)
+    for p in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0:
+            upper.pop()
+        upper.append(p)
+    poly = lower[:-1] + upper[:-1]
+    a = 0.0
+    for i in range(len(poly)):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % len(poly)]
+        a += x1 * y2 - x2 * y1
+    return abs(a) / 2 / 1e6
+
+
+def _median_spacing(cents):
+    """Median nearest-neighbour distance (m) -- the typical column grid."""
+    sp = []
+    for i, (x, y) in enumerate(cents):
+        best = 1e18
+        for j, (x2, y2) in enumerate(cents):
+            if i == j:
+                continue
+            d = math.hypot(x - x2, y - y2)
+            if 50 < d < best:
+                best = d
+        if best < 1e17:
+            sp.append(best)
+    sp.sort()
+    return (sp[len(sp) // 2] / 1000) if sp else 0.0
+
+
+# ponytail: 12 m cluster gap + >=8 cols/sheet are heuristics tuned on a real
+# admin-block drawing. Two buildings closer than 12 m would merge; a shed with
+# <8 columns needs min_cols lowered. Expose both as knobs if a drawing misreads.
+def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
+    """Read a building from raw geometry -- no tags, no layers, no manual box.
+
+    Columns are rectangles; sheets/floors are spatial clusters of columns;
+    the footprint is the hull the columns enclose. Returns a dict describing
+    the building's typical floor, plus the raw clusters. Everything here comes
+    from shapes and coordinates -- nothing typed on the drawing."""
+    cols = _col_rects(_all_rects(msp))
+    cents = [(c[2], c[3]) for c in cols]
+    groups = [g for g in _cluster(cents, cluster_m * 1000) if len(g) >= min_cols]
+    groups.sort(key=len, reverse=True)
+
+    clusters = []
+    for g in groups:
+        gcols = [cols[i] for i in g]
+        gcents = [cents[i] for i in g]
+        clusters.append({
+            "n": len(gcols),
+            "sizes": Counter((round(w), round(h)) for w, h, _, _ in gcols),
+            "footprint": _hull_area(gcents),
+            "grid": _median_spacing(gcents),
+        })
+    if not clusters:
+        return {"clusters": [], "floor_count": 0, "columns_per_floor": 0,
+                "footprint": 0.0, "grid": 0.0, "schedule": Counter(),
+                "total_columns": len(cols)}
+
+    # Building floors = clusters with a real footprint on a normal structural
+    # grid (3-10 m). Small / fine-grid clusters are detail views -> excluded.
+    floors = [c for c in clusters
+              if c["footprint"] >= 100 and 2.5 <= c["grid"] <= 11]
+    if not floors:
+        floors = [clusters[0]]
+    # keep only those near the biggest floor footprint (repeated plans of the
+    # SAME building), so detail/schedule blocks don't inflate the floor count.
+    fmax = max(c["footprint"] for c in floors)
+    floors = [c for c in floors if c["footprint"] >= 0.55 * fmax]
+    rep = max(floors, key=lambda c: c["n"])   # richest plan = best schedule
+    fpts = sorted(c["footprint"] for c in floors)
+    return {
+        "clusters": clusters,
+        "floor_count": len(floors),
+        "columns_per_floor": int(sum(c["n"] for c in floors) / len(floors)),
+        "footprint": fpts[len(fpts) // 2],     # median floor footprint
+        "grid": rep["grid"],
+        "schedule": rep["sizes"],
+        "total_columns": len(cols),
+    }
+
+
+def cmd_scan(args):
+    """ONE-TAP takeoff from raw geometry -- no tags, no layers, no setup.
+    Reads columns (as rectangles), auto-separates the floor-plan sheets in the
+    file, and reports the building: columns per floor, floor count, footprint,
+    grid and column schedule. Works on an untagged, unlayered early drawing."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    d = _detect_geometry(msp,
+                         cluster_m=getattr(args, "gap", None) or 12.0,
+                         min_cols=getattr(args, "mincols", None) or 8)
+    if not d["clusters"]:
+        print("No column-like rectangles found. If columns are drawn as blocks "
+              "or circles, tell me and I'll widen the detector.")
+        return
+    print("ONE-TAP SCAN  (read from the drawing's geometry -- no tags, no layers)\n")
+    print(f"Building floor plans detected : {d['floor_count']}")
+    print(f"Columns per floor (typical)   : {d['columns_per_floor']}")
+    print(f"Floor footprint               : {d['footprint']:,.0f} m2")
+    print(f"Column grid (typical spacing) : {d['grid']:.2f} m")
+    print(f"Total column rectangles read  : {d['total_columns']}\n")
+    rows = [[f"{w} x {h}", n] for (w, h), n in d["schedule"].most_common(12)]
+    print("COLUMN SCHEDULE (sizes read from the rectangles themselves)")
+    print(fmt_table(rows, ["section (mm)", "count on the plan"]))
+    # honesty grade
+    std = {(230, 230), (230, 300), (300, 300), (300, 450), (450, 450),
+           (450, 600), (525, 525), (600, 600), (600, 750), (750, 750)}
+    hit = sum(n for sz, n in d["schedule"].items() if sz in std)
+    frac = hit / max(1, sum(d["schedule"].values()))
+    grade = ("TO-SCALE -- sizes match standard sections, trust the numbers"
+             if frac > 0.4 else
+             "ROUGH -- column boxes may be placeholders; counts/grid are good, "
+             "confirm sizes before pricing")
+    print(f"\nQuality: {grade}")
+    print("Other floors/detail blocks in the file were separated automatically; "
+          "nothing was tagged or layered.")
 
 
 def cmd_drawing_check(args):
@@ -3624,6 +3825,16 @@ def build_parser():
         ("hatch", cmd_hatch, "hatch (finish) area per layer"),
         ("drawing-check", cmd_drawing_check, "which conventions/tools work on this drawing"),
         ("extents", cmd_extents, "drawing extents / sheet size"),
+    ]:
+        sp = add(name, func, h)
+        file_arg(sp)
+
+    sp = add("scan", cmd_scan, "one-tap geometry scan (no tags/layers needed)")
+    file_arg(sp)
+    sp.add_argument("--gap", type=float, help="sheet separation gap (m, default 12)")
+    sp.add_argument("--mincols", type=int, help="min columns to count a sheet (default 8)")
+
+    for name, func, h in [
         ("purge", cmd_purge, "report empty/junk layers"),
     ]:
         sp = add(name, func, h)
@@ -3771,6 +3982,8 @@ def build_parser():
     sp.add_argument("--ws", type=float, default=300, help="working space each side (mm)")
     sp.add_argument("--steel-kg", dest="steel_kg", type=float, default=100,
                     help="reinforcement steel (kg per m3 concrete)")
+    sp.add_argument("--floor-height", dest="floor_height", type=float,
+                    help="floor-to-floor height (m) if the drawing has no level marks")
 
     sp = add("rates", cmd_rates, "view the rate library (edit rates.json to change)")
 
