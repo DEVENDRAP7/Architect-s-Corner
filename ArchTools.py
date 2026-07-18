@@ -570,7 +570,19 @@ def cmd_columns(args):
     msp = doc.modelspace()
     sched = _column_schedule(msp)
     if not sched:
-        print("No 'Cn / WxH' column markers found.")
+        # No C1/C2 tags -> read the columns straight from the geometry.
+        g = _detect_geometry(msp)
+        if g.get("floor_count"):
+            print("No column tags -- counted from the drawing's geometry "
+                  "(rectangles), no tags/layers used:\n")
+            rows = [[f"{w}x{h}", n, f"{(w/1000)*(h/1000):.4f}"]
+                    for (w, h), n in sorted(g["schedule"].items(),
+                                            key=lambda kv: -(kv[0][0]*kv[0][1]))]
+            print(fmt_table(rows, ["section (mm)", "count on plan", "area (m2)"]))
+            print(f"\nColumns on one plan : {sum(g['schedule'].values())}")
+            print(f"Floor plans detected: {g['floor_count']}")
+            return
+        print("No columns found (no 'Cn / WxH' tags and no clear column grid).")
         return
     by_size = Counter(sched.values())
     rows = [[sz, n, f"{_area(sz):.4f}"] for sz, n in
@@ -619,7 +631,19 @@ def cmd_floorcols(args):
             titles.append((x, y, nm))
 
     if not titles:
-        print("No floor-plan titles found. Try --box x0,y0,x1,y1 for one sheet copy.")
+        # No 'GROUND FLOOR PLAN' titles -> use the geometry engine, which finds
+        # the floor plans by clustering the columns (no tags/layers needed).
+        g = _detect_geometry(msp)
+        if g.get("floor_count"):
+            print("No floor-plan titles -- floors found from the drawing's "
+                  "geometry (column clusters):\n")
+            print(f"Floor plans detected     : {g['floor_count']}")
+            print(f"Columns per floor (typ.) : {g['columns_per_floor']}")
+            print(f"Floor footprint          : {g['footprint']:,.0f} m2")
+            print(f"Column grid              : {g['grid']:.2f} m")
+            return
+        print("No floor plans found (no titles and no clear column grid). "
+              "Try --box x0,y0,x1,y1 for one sheet copy.")
         return
 
     floor = defaultdict(Counter)
@@ -1642,7 +1666,11 @@ def cmd_concrete(args):
             by_size[sz] += v
             counts[sz] += n
     res = _largest_closed(doc, msp, args.layer)
-    nfloors = len(seq) or 1
+    # Floor count from the geometry engine (real plans found by clustering)
+    # beats the level-mark fallback, which invents a 6-storey scheme when a
+    # drawing has no level marks.
+    _g = _detect_geometry(msp)
+    nfloors = _g["floor_count"] or len(seq) or 1
     area, slab = 0.0, 0.0
     if res:
         area, _ = res
