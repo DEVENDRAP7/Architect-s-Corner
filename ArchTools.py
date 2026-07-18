@@ -190,6 +190,7 @@ CATALOG = {
     "layer-length": ("Finishes & quantities", "Length on one layer (pipe/chajja)"),
     # Drawing QA
     "scan":        ("Drawing QA", "One-tap scan (no tags/layers needed)"),
+    "sheet-map":   ("Drawing QA", "What views are on this sheet (plans/elevations/sections)"),
     "drawing-check": ("Drawing QA", "Which tools will work on this drawing"),
     "qa-report":   ("Drawing QA", "Drawing health report (find errors)"),
     "dxf-diff":    ("Drawing QA", "Compare two drawings / revisions"),
@@ -2629,16 +2630,21 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
     groups = [g for g in _cluster(cents, cluster_m * 1000) if len(g) >= min_cols]
     groups.sort(key=len, reverse=True)
 
+    titles = _view_titles(msp)
     clusters = []
     for g in groups:
         gcols = [cols[i] for i in g]
         gcents = [cents[i] for i in g]
+        cx = sum(p[0] for p in gcents) / len(gcents)
+        cy = sum(p[1] for p in gcents) / len(gcents)
+        kind, name = _nearest_view(titles, cx, cy)
         clusters.append({
             "n": len(gcols),
             "sizes": Counter((round(w), round(h)) for w, h, _, _ in gcols),
             "footprint": _concave_area(gcents),
             "perimeter": _hull_perimeter(gcents),
             "grid": _median_spacing(gcents),
+            "view": kind, "view_name": name,
         })
     if not clusters:
         return {"clusters": [], "floor_count": 0, "columns_per_floor": 0,
@@ -2647,10 +2653,12 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
 
     # Building floors = clusters with a real footprint on a normal structural
     # grid (2.5-11 m). Tight-grid / small clusters are tables, legends or detail
-    # blocks -> NOT columns. If none qualify we say so rather than pretend a
-    # clump of table cells is a floor.
+    # blocks -> NOT columns. A cluster whose nearest view title says ELEVATION /
+    # SECTION / SCHEDULE / DETAIL is not a plan, whatever its geometry looks
+    # like -- that's how an elevation's window grid stops reading as columns.
     floors = [c for c in clusters
-              if c["footprint"] >= 100 and 2.5 <= c["grid"] <= 11]
+              if c["footprint"] >= 100 and 2.5 <= c["grid"] <= 11
+              and c["view"] in (None, "plan")]
     if not floors:
         return {"clusters": clusters, "floor_count": 0, "columns_per_floor": 0,
                 "footprint": 0.0, "grid": 0.0, "schedule": Counter(),
@@ -2661,16 +2669,92 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
     floors = [c for c in floors if c["footprint"] >= 0.55 * fmax]
     rep = max(floors, key=lambda c: c["n"])   # richest plan = best schedule
     fpts = sorted(c["footprint"] for c in floors)
+    # Floor count: distinct titled floor names beat raw cluster count -- a
+    # tripled sheet set repeats every plan, but 'GROUND FLOOR PLAN' is still
+    # one floor however many copies are drawn.
+    names = {c["view_name"] for c in floors
+             if c["view"] == "plan" and c["view_name"]}
+    nfloors = len(names) if names else len(floors)
     return {
         "clusters": clusters,
-        "floor_count": len(floors),
+        "floor_count": nfloors,
         "columns_per_floor": int(sum(c["n"] for c in floors) / len(floors)),
         "footprint": fpts[len(fpts) // 2],     # median floor footprint
         "perimeter": rep["perimeter"],
         "grid": rep["grid"],
         "schedule": rep["sizes"],
         "total_columns": len(cols),
+        "views": Counter(k for k, _ in {(t[2], t[3]) for t in titles}),
     }
+
+
+# ----------------------------------------------------------------------
+# Sheet understanding -- what IS each region of the sheet?
+# ----------------------------------------------------------------------
+# One DXF sheet carries many views side by side: floor plans, elevations
+# (front/side views), sections, schedule tables, detail blocks, title block.
+# Measuring without knowing which is which is the root of every hallucination
+# (an elevation's window grid reads as columns, a table reads as a plan).
+# Indian working drawings title every view ("GROUND FLOOR PLAN", "FRONT
+# ELEVATION", 'SECTION AT "A-A"') -- so the classifier reads those titles and
+# assigns each geometry cluster to its view. Takeoff then runs ONLY on plans.
+_VIEWPATS = [
+    ("plan",      re.compile(r"\bFLOOR\s+PLAN\b|^[A-Z ]*\bPLAN$")),
+    ("elevation", re.compile(r"\bELEVATION$")),
+    ("section",   re.compile(r"^SECTIONS?\b")),
+    ("schedule",  re.compile(r"\bSCHEDULE\b")),
+    ("detail",    re.compile(r"\bDETAILS?$|AS/DETAILS")),
+]
+
+
+def _view_titles(msp):
+    """Every view title on the sheet as (x, y, kind, text). Short standalone
+    text only, anchored patterns, so a note that merely mentions 'section
+    changes' doesn't classify anything."""
+    out = []
+    for s, x, y, _ in all_text_entities(msp):
+        u = " ".join(s.split()).upper()
+        if not u or len(u) > 45:
+            continue
+        for kind, pat in _VIEWPATS:
+            if pat.search(u):
+                out.append((x, y, kind, u))
+                break
+    return out
+
+
+def _nearest_view(titles, cx, cy):
+    """(kind, name) of the view title nearest a cluster centroid."""
+    if not titles:
+        return None, None
+    t = min(titles, key=lambda t: (t[0] - cx) ** 2 + (t[1] - cy) ** 2)
+    return t[2], t[3]
+
+
+def _best_plan_cluster(msp):
+    """Column centres + spacing of the largest cluster that IS a floor plan
+    (view-classified). Anchor for wall/room detection, so an elevation's
+    window grid can never become the region we measure."""
+    cols = _dedupe_rects(_col_rects(_all_rects(msp)))
+    cents = [(c[2], c[3]) for c in cols]
+    groups = [g for g in _cluster(cents, 12000) if len(g) >= 8]
+    if not groups:
+        return None
+    groups.sort(key=len, reverse=True)
+    titles = _view_titles(msp)
+    for g in groups:
+        gc = [cents[i] for i in g]
+        s = _median_spacing(gc) * 1000
+        if not 2500 <= s <= 11000:
+            continue
+        if titles:
+            cx = sum(p[0] for p in gc) / len(gc)
+            cy = sum(p[1] for p in gc) / len(gc)
+            kind, _n = _nearest_view(titles, cx, cy)
+            if kind not in (None, "plan"):
+                continue
+        return gc, s
+    return None
 
 
 def _detect_walls(msp):
@@ -2682,17 +2766,12 @@ def _detect_walls(msp):
       1. only lines INSIDE the biggest floor-plan's column region,
       2. only LINE/LWPOLYLINE entities (dims/hatch/text never counted),
       3. collinear segments merged into runs first, each run paired once.
+    Anchored to the largest PLAN-classified cluster (never an elevation).
     Returns {} when there's no column grid to anchor the region."""
-    cols = _dedupe_rects(_col_rects(_all_rects(msp)))
-    cents = [(c[2], c[3]) for c in cols]
-    groups = [g for g in _cluster(cents, 12000) if len(g) >= 8]
-    if not groups:
+    anchor = _best_plan_cluster(msp)
+    if not anchor:
         return {}
-    groups.sort(key=len, reverse=True)
-    gc = [cents[i] for i in groups[0]]
-    s = _median_spacing(gc) * 1000
-    if not 2500 <= s <= 11000:
-        return {}
+    gc, s = anchor
     m = s * 0.75
     xs = [p[0] for p in gc]; ys = [p[1] for p in gc]
     box = (min(xs) - m, min(ys) - m, max(xs) + m, max(ys) + m)
@@ -2779,17 +2858,11 @@ def _detect_rooms(msp, cell=100.0):
     remaining pocket of free pixels is a room. Room names come from text that
     sits INSIDE the room and doesn't look like a tag/size/number.
     Returns [(area_m2, label)] largest-first, [] when no column grid anchors
-    the plan region."""
-    cols = _dedupe_rects(_col_rects(_all_rects(msp)))
-    cents = [(c[2], c[3]) for c in cols]
-    groups = [g for g in _cluster(cents, 12000) if len(g) >= 8]
-    if not groups:
+    the plan region. Anchored to the largest PLAN-classified cluster."""
+    anchor = _best_plan_cluster(msp)
+    if not anchor:
         return []
-    groups.sort(key=len, reverse=True)
-    gc = [cents[i] for i in groups[0]]
-    s = _median_spacing(gc) * 1000
-    if not 2500 <= s <= 11000:
-        return []
+    gc, s = anchor
     m = s * 0.75
     xs = [p[0] for p in gc]; ys = [p[1] for p in gc]
     x0, y0, x1, y1 = min(xs) - m, min(ys) - m, max(xs) + m, max(ys) + m
@@ -2967,6 +3040,12 @@ def cmd_scan(args):
         print("metres apart on a grid), scan will read it straight off the shapes.")
         return
     print("ONE-TAP SCAN  (read from the drawing's geometry -- no tags, no layers)\n")
+    vs = d.get("views")
+    if vs:
+        print("Sheet views understood        : "
+              + ", ".join(f"{n} {k}{'s' if n > 1 else ''}"
+                          for k, n in vs.most_common())
+              + "  (only plans are measured)")
     print(f"Building floor plans detected : {d['floor_count']}")
     print(f"Columns per floor (typical)   : {d['columns_per_floor']}")
     print(f"Floor footprint               : {d['footprint']:,.0f} m2")
@@ -3001,6 +3080,42 @@ def cmd_scan(args):
     print(f"\nQuality: {grade}")
     print("Other floors/detail blocks in the file were separated automatically; "
           "nothing was tagged or layered.")
+
+
+def cmd_sheet_map(args):
+    """What the solution SEES on this sheet: every titled view (plans,
+    elevations, sections, schedules, details) and what each geometry cluster
+    was classified as. Takeoff only measures the plan regions -- this is the
+    proof it isn't reading an elevation or a table as a building."""
+    doc = load_dxf(args.file)
+    msp = doc.modelspace()
+    titles = _view_titles(msp)
+    print("SHEET MAP  (what the solution understands on this sheet)\n")
+    if titles:
+        bykind = defaultdict(set)
+        for x, y, kind, name in titles:
+            bykind[kind].add(name)
+        order = ["plan", "elevation", "section", "schedule", "detail"]
+        rows = [[k.upper(), len(bykind[k]), ", ".join(sorted(bykind[k]))[:70]]
+                for k in order if k in bykind]
+        print(fmt_table(rows, ["view type", "distinct", "titles found"]))
+    else:
+        print("No view titles found -- classification falls back to geometry "
+              "(grid spacing, footprint).")
+    d = _detect_geometry(msp)
+    if d["clusters"]:
+        print("\nGEOMETRY CLUSTERS (groups of column-like rectangles)")
+        rows = []
+        for c in d["clusters"]:
+            rows.append([(c["view"] or "unclassified").upper(),
+                         (c["view_name"] or "-")[:34], c["n"],
+                         f"{c['footprint']:,.0f}", f"{c['grid']:.1f}"])
+        print(fmt_table(rows, ["classified as", "nearest title", "rects",
+                               "area m2", "grid m"]))
+        print(f"\nFloor plans counted for takeoff: {d['floor_count']}")
+    print("\nOnly PLAN regions are measured. Elevations, sections, schedules "
+          "and details are\nrecognised and excluded -- never counted as "
+          "columns, rooms or floors.")
 
 
 def cmd_drawing_check(args):
@@ -4304,6 +4419,10 @@ def build_parser():
     file_arg(sp)
     sp.add_argument("--gap", type=float, help="sheet separation gap (m, default 12)")
     sp.add_argument("--mincols", type=int, help="min columns to count a sheet (default 8)")
+
+    sp = add("sheet-map", cmd_sheet_map,
+             "map the sheet's views: plans/elevations/sections/schedules")
+    file_arg(sp)
 
     for name, func, h in [
         ("purge", cmd_purge, "report empty/junk layers"),
