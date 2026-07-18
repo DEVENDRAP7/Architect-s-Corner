@@ -2478,6 +2478,20 @@ def _median_spacing(cents):
     return (sp[len(sp) // 2] / 1000) if sp else 0.0
 
 
+def _dedupe_rects(cols, cell=300):
+    """Collapse stacked / overlapping rectangles at the same spot to one.
+    A schedule table or legend draws many boxes on top of each other (nearest-
+    neighbour ~0); without this they'd be counted as dozens of 'columns'."""
+    seen, out = set(), []
+    for w, h, cx, cy in cols:
+        key = (round(cx / cell), round(cy / cell))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append((w, h, cx, cy))
+    return out
+
+
 # ponytail: 12 m cluster gap + >=8 cols/sheet are heuristics tuned on a real
 # admin-block drawing. Two buildings closer than 12 m would merge; a shed with
 # <8 columns needs min_cols lowered. Expose both as knobs if a drawing misreads.
@@ -2488,7 +2502,7 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
     the footprint is the hull the columns enclose. Returns a dict describing
     the building's typical floor, plus the raw clusters. Everything here comes
     from shapes and coordinates -- nothing typed on the drawing."""
-    cols = _col_rects(_all_rects(msp))
+    cols = _dedupe_rects(_col_rects(_all_rects(msp)))
     cents = [(c[2], c[3]) for c in cols]
     groups = [g for g in _cluster(cents, cluster_m * 1000) if len(g) >= min_cols]
     groups.sort(key=len, reverse=True)
@@ -2509,11 +2523,15 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
                 "total_columns": len(cols)}
 
     # Building floors = clusters with a real footprint on a normal structural
-    # grid (3-10 m). Small / fine-grid clusters are detail views -> excluded.
+    # grid (2.5-11 m). Tight-grid / small clusters are tables, legends or detail
+    # blocks -> NOT columns. If none qualify we say so rather than pretend a
+    # clump of table cells is a floor.
     floors = [c for c in clusters
               if c["footprint"] >= 100 and 2.5 <= c["grid"] <= 11]
     if not floors:
-        floors = [clusters[0]]
+        return {"clusters": clusters, "floor_count": 0, "columns_per_floor": 0,
+                "footprint": 0.0, "grid": 0.0, "schedule": Counter(),
+                "total_columns": len(cols), "no_grid": True}
     # keep only those near the biggest floor footprint (repeated plans of the
     # SAME building), so detail/schedule blocks don't inflate the floor count.
     fmax = max(c["footprint"] for c in floors)
@@ -2544,6 +2562,19 @@ def cmd_scan(args):
     if not d["clusters"]:
         print("No column-like rectangles found. If columns are drawn as blocks "
               "or circles, tell me and I'll widen the detector.")
+        return
+    if d.get("no_grid"):
+        print("ONE-TAP SCAN  (read from the drawing's geometry -- no tags, no layers)\n")
+        print(f"Found {d['total_columns']} column-like rectangles, but they don't "
+              "form a real structural grid --")
+        print("they sit in tight clumps, which usually means a schedule table, a "
+              "legend, or a")
+        print("detail block rather than a to-scale floor plan.\n")
+        print("So this looks like an EARLY / detail drawing, not a plan drawn to "
+              "scale. Counts and")
+        print("sizes here can't be trusted yet -- once the plan is drawn to scale "
+              "(columns spaced")
+        print("metres apart on a grid), scan will read it straight off the shapes.")
         return
     print("ONE-TAP SCAN  (read from the drawing's geometry -- no tags, no layers)\n")
     print(f"Building floor plans detected : {d['floor_count']}")
