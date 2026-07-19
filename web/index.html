@@ -561,22 +561,29 @@ async function autofillForm(){
 }
 
 /* ---------- dropdown fields (presets + layers) ---------- */
+/* never show a raw CLI flag to the user: '--q' -> 'q' is still cryptic, so
+   labels come from help text and placeholders from its example when present */
+function hum(name){return String(name||"").replace(/^--?/,"").replace(/-/g," ");}
+function holder(p){
+  const m=(p.help||"").match(/e\.g\.?\s*([^)]+)\)?/i);
+  return m?("e.g. "+m[1].trim()):hum(p.name);
+}
 function fieldHtml(p,dxfTool,id){
-  if(p.type==="flag") return `<div class="field"><label>${esc(p.help||p.name)}</label>
+  if(p.type==="flag") return `<div class="field"><label>${esc(p.help||hum(p.name))}</label>
     <select data-p="${esc(p.name)}" id="${id}"><option value="">no</option><option value="1">yes</option></select></div>`;
   if(dxfTool&&p.name==="--layer") return `<div class="field"><label>Which layer? <span style="color:var(--faint)">(optional — Auto works)</span></label>
     <select data-p="${esc(p.name)}" id="${id}" data-layerfield="1" data-custom="1"><option value="">✦ Auto — best guess</option></select></div>`;
   if(PRESETS[p.name]) return selField(p,PRESETS[p.name],STRICT.has(p.name),id);
   const it=(p.type==="int"||p.type==="float")?"number":"text";
-  return `<div class="field"><label>${esc(p.help||p.name)}${p.required?' *':""}</label>
-    <input type="${it}" data-p="${esc(p.name)}" id="${id}" value="${esc(p.default??"")}" placeholder="${esc(p.name)}"></div>`;
+  return `<div class="field"><label>${esc(p.help||hum(p.name))}${p.required?' *':""}</label>
+    <input type="${it}" data-p="${esc(p.name)}" id="${id}" value="${esc(p.default??"")}" placeholder="${esc(holder(p))}"></div>`;
 }
 function selField(p,options,strict,id){
   const def=p.default??"";
   const match=v=>def!==""&&(String(v)===String(def)||(isFinite(v)&&isFinite(def)&&Number(v)===Number(def)));
   const inList=options.some(match);
   const opts=options.map(v=>`<option value="${esc(v)}" ${match(v)?"selected":""}>${esc(v)}</option>`).join("");
-  return `<div class="field"><label>${esc(p.help||p.name)}${p.required?' *':""}</label>
+  return `<div class="field"><label>${esc(p.help||hum(p.name))}${p.required?' *':""}</label>
     <select data-p="${esc(p.name)}" id="${id}" ${strict?"":'data-custom="1"'}>
       ${(strict||p.required)?"":'<option value=""></option>'}
       ${(def!==""&&!inList)?`<option value="${esc(def)}" selected>${esc(def)}</option>`:""}${opts}

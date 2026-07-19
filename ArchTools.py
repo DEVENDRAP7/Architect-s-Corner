@@ -1202,7 +1202,7 @@ def cmd_plinth_colvol(args):
     h = _plinth_height(levels, getattr(args, "plinth", None))
     if h is None:
         print("Plinth height unknown (no ROAD/GROUND level marks). "
-              "Re-run with --plinth <metres> (e.g. --plinth 1.2).")
+              "Set 'plinth height' in Advanced (metres, e.g. 1.2).")
         return
     box = _parse_box(getattr(args, "box", None))
     markers, titles = _markers_titles(msp, box)
@@ -1460,7 +1460,7 @@ def cmd_slab(args):
     if not res:
         print("No slab boundary found"
               + (f" on layer '{args.layer}'" if args.layer else "")
-              + ". Pass --layer <slab/boundary layer>.")
+              + ". Pick the slab/boundary layer in Advanced.")
         return
     area, per = res
     if args.floors:
@@ -1932,7 +1932,7 @@ def cmd_footings(args):
         return
     labels = sum(1 for s, *_ in all_text_entities(msp) if "FOOTING" in s.upper())
     print(f"No footing layer found. 'FOOTING' text labels: {labels}")
-    print("(Pass --layer NAME if footings sit on a specific layer.)")
+    print("(Pick the footing layer in Advanced if they sit on one.)")
 
 
 def cmd_heights(args):
@@ -2076,7 +2076,7 @@ def cmd_findtext(args):
     msp = doc.modelspace()
     q = (args.q or "").lower()
     if not q:
-        print("Pass --q KEYWORD (e.g. --q tank).")
+        print("Type a keyword to find (e.g. tank).")
         return
     hits, seen = [], set()
     for s, x, y, lay in all_text_entities(msp):
@@ -2298,7 +2298,7 @@ def cmd_fixtures(args):
         c = Counter(e.dxf.name for e in msp if e.dxftype() == "INSERT"
                     and pat.search(e.dxf.name or ""))
     else:
-        print("Pass --layer or --name.")
+        print("Pick a layer or type a fixture name (e.g. wc) in Advanced.")
         return
     if not c:
         print("No matching blocks. Use 'blocks' to see names/layers.")
@@ -3532,7 +3532,7 @@ def cmd_which_layer(args):
         print(f"Layers with text '{args.q}':")
         print(fmt_table([[l, n] for l, n in c.most_common()], ["layer", "matches"]))
     else:
-        print("Pass --type LINE  or  --q keyword.")
+        print("Type an entity type (e.g. LINE) or a keyword in Advanced.")
 
 
 def cmd_door_width_check(args):
@@ -4685,7 +4685,8 @@ def build_parser():
     sp.add_argument("--height", type=float, default=3.0, help="wall height (m)")
 
     sp = add("findtext", cmd_findtext, "find text on the drawing")
-    file_arg(sp); sp.add_argument("--q", help="keyword to find")
+    file_arg(sp); sp.add_argument("--q", required=True,
+                                  help="what to find (e.g. tank)")
     sp.add_argument("--limit", type=int, default=30, help="max matches")
 
     sp = add("layer-detail", cmd_layer_detail, "entity breakdown for a layer")
@@ -4752,8 +4753,8 @@ def build_parser():
     file_arg(sp)
 
     sp = add("which-layer", cmd_which_layer, "find which layers hold X")
-    file_arg(sp); sp.add_argument("--type", help="DXF type e.g. INSERT")
-    sp.add_argument("--q", help="text keyword")
+    file_arg(sp); sp.add_argument("--type", help="entity type (e.g. INSERT)")
+    sp.add_argument("--q", help="text to look for (e.g. tank)")
 
     sp = add("calc-tiles", cmd_calc_tiles, "tiles for a floor area")
     sp.add_argument("--area", type=float, required=True)
