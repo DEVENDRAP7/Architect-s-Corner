@@ -67,6 +67,8 @@ import sys
 import math
 from collections import Counter, defaultdict
 
+import dxfgeom as _gx
+
 # ----------------------------------------------------------------------
 # Soft imports -- only fail when a command actually needs the library.
 # ----------------------------------------------------------------------
@@ -554,15 +556,46 @@ def cmd_levels(args):
     print(fmt_table(rows, ["level", "elev (m)"]))
 
 
-def _column_schedule(msp):
-    """Return {tag: 'WxH'} from MTEXT of form 'C12\\n450x600'."""
-    sched = {}
-    pat = re.compile(r"^(C\d{1,3})\s*\n\s*(\d{3,4})\s*[xX]\s*(\d{3,4})\s*$")
+# A column label is 'C12' over '450x600', but real drawings write it many
+# ways: a space instead of the line break, a 'COL' prefix, a trailing '(TYP)'
+# or material note. The old pattern was anchored at both ends with a required
+# newline, so it matched only the tidiest case and silently found nothing on
+# most drawings.
+_COL_TAG = re.compile(
+    r"^\s*(?:COL\.?\s*)?(C\s*\d{1,3})\s*[\n\r/|:,-]?\s*"
+    r"(\d{3,4})\s*[xX*\u00d7]\s*(\d{3,4})\b")
+
+
+def _column_labels(msp):
+    """Every column label on the drawing as (tag, 'WxH'), one per placement."""
+    out = []
     for s, *_ in all_text_entities(msp):
-        m = pat.match(s)
+        m = _COL_TAG.match(s.strip())
         if m:
-            sched[m.group(1)] = f"{m.group(2)}x{m.group(3)}"
-    return sched
+            out.append((re.sub(r"\s+", "", m.group(1)),
+                        f"{m.group(2)}x{m.group(3)}"))
+    return out
+
+
+def _scale_of(doc, msp):
+    """The drawing's unit, worked out from its own geometry (see dxfgeom)."""
+    try:
+        return _gx.detect_scale(doc, _gx.regions(list(msp), recover_lines=False))
+    except Exception:
+        return _gx.Scale()
+
+
+def _insert_count(e):
+    """A MINSERT places rows x columns copies from a single INSERT record."""
+    try:
+        return max(1, int(e.dxf.row_count or 1)) * max(1, int(e.dxf.column_count or 1))
+    except Exception:
+        return 1
+
+
+def _column_schedule(msp):
+    """Return {tag: 'WxH'} -- the section each column tag denotes."""
+    return dict(_column_labels(msp))
 
 
 def cmd_columns(args):
@@ -574,23 +607,46 @@ def cmd_columns(args):
         # No C1/C2 tags -> read the columns straight from the geometry.
         g = _detect_geometry(msp)
         if g.get("floor_count"):
-            print("No column tags -- counted from the drawing's geometry "
-                  "(rectangles), no tags/layers used:\n")
+            print("No column tags -- counted from the drawing's geometry, "
+                  "no tags/layers used:\n")
             rows = [[f"{w}x{h}", n, f"{(w/1000)*(h/1000):.4f}"]
                     for (w, h), n in sorted(g["schedule"].items(),
                                             key=lambda kv: -(kv[0][0]*kv[0][1]))]
             print(fmt_table(rows, ["section (mm)", "count on plan", "area (m2)"]))
             print(f"\nColumns on one plan : {sum(g['schedule'].values())}")
             print(f"Floor plans detected: {g['floor_count']}")
+            # Say how the number was reached and how far to trust it: a
+            # quantity that feeds a BOQ should never look more certain than
+            # the reading behind it actually is.
+            sc = g.get("scale")
+            if sc is not None:
+                print(f"Units                : {sc.unit} ({sc.source})")
+                if sc.confidence != "high":
+                    print(f"                       {sc.note}")
+            if g.get("note"):
+                print(f"Read as              : {g['note']}")
+            conf = g.get("confidence")
+            if conf and conf != "high":
+                print(f"Confidence           : {conf} -- check the count "
+                      f"against the drawing before pricing it")
             return
         print("No columns found (no 'Cn / WxH' tags and no clear column grid).")
         return
-    by_size = Counter(sched.values())
-    rows = [[sz, n, f"{_area(sz):.4f}"] for sz, n in
-            sorted(by_size.items(), key=lambda kv: -_area(kv[0]))]
-    print(fmt_table(rows, ["section (mm)", "count", "area (m2)"]))
+    # Count PLACEMENTS, not tags. A plan where C1 is used twenty times has
+    # twenty columns; the old code counted the tag once, so its "total" was
+    # only ever the number of distinct tags.
+    labels = _column_labels(msp)
+    placed = Counter(size for _tag, size in labels)
+    tags_per_size = Counter(sched.values())
+    rows = [[sz, tags_per_size.get(sz, 0), placed.get(sz, 0), f"{_area(sz):.4f}"]
+            for sz in sorted(set(tags_per_size) | set(placed),
+                             key=lambda z: -_area(z))]
+    print(fmt_table(rows, ["section (mm)", "tags", "columns placed", "area (m2)"]))
     print(f"\nDistinct column tags : {len(sched)}")
-    print(f"Total column types   : {sum(by_size.values())}")
+    print(f"Columns placed       : {sum(placed.values())}")
+    if sum(placed.values()) == len(sched):
+        print("(one label per tag -- if the plan repeats a tag, label each "
+              "placement to count them all)")
 
 
 def _area(size):
@@ -758,20 +814,30 @@ def cmd_areas(args):
     """Sum closed LWPOLYLINE areas per layer (floor / room / plot areas)."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
-    by_layer = defaultdict(lambda: [0, 0.0])  # count, area(m2)
-    for e in msp:
-        if e.dxftype() == "LWPOLYLINE" and e.closed:
-            try:
-                a = abs(e.get_area()) if hasattr(e, "get_area") else _poly_area(e)
-            except Exception:
-                a = _poly_area(e)
-            lay = e.dxf.layer or ""
-            by_layer[lay][0] += 1
-            by_layer[lay][1] += a / 1_000_000.0  # mm^2 -> m^2
-    rows = [[lay, cnt, f"{ar:.2f}"] for lay, (cnt, ar) in
-            sorted(by_layer.items(), key=lambda kv: -kv[1][1])]
-    print(fmt_table(rows, ["layer", "closed polys", "area m2"]))
-    print("\n(Assumes drawing units = mm. Divide differently if units differ.)")
+    scale = _scale_of(doc, msp)
+    # Every kind of closed shape, block content included -- not just a closed
+    # LWPOLYLINE -- and areas are bulge-accurate, so a curved boundary is no
+    # longer measured as if it were straight.
+    regs = _gx.regions(list(_gx.iter_entities(msp)), recover_lines=False)
+    by_layer = defaultdict(list)
+    for r in regs:
+        by_layer[r.layer].append(r)
+
+    rows = []
+    nested_total = 0
+    for lay, items in by_layer.items():
+        gross = scale.area_to_m2(sum(r.area for r in items))
+        net_raw, _outer, holes = _gx.net_areas(items)
+        net = scale.area_to_m2(net_raw)
+        nested_total += holes
+        rows.append([lay, len(items), f"{gross:.2f}", f"{net:.2f}"])
+    rows.sort(key=lambda r: -float(r[2]))
+    print(fmt_table(rows, ["layer", "closed shapes", "gross m2", "net m2"]))
+    print(f"\nUnits: {scale.unit} ({scale.source}).")
+    if nested_total:
+        print(f"'net' subtracts {nested_total} shape(s) drawn inside another on "
+              f"the same layer -- a building inside its plot, a courtyard "
+              f"inside a floor. 'gross' is the plain sum of every shape.")
 
 
 def _auto_layer(msp, kind="area"):
@@ -845,7 +911,11 @@ def cmd_blocks(args):
     """Count block references (INSERT) by block name -- fixtures, symbols."""
     doc = load_dxf(args.file)
     msp = doc.modelspace()
-    c = Counter(e.dxf.name for e in msp if e.dxftype() == "INSERT")
+    # Nested references count too: a plan wrapped in one block hides every
+    # fixture inside it from a plain modelspace scan.
+    c = Counter()
+    for e, _depth in _gx.iter_inserts(msp):
+        c[e.dxf.name or ""] += _insert_count(e)
     if not c:
         print("No block references found.")
         return
@@ -1900,17 +1970,29 @@ def cmd_beams(args):
             print("  " + ", ".join(l.dxf.name for l in doc.layers))
             return
         layer = cand[0]
-    n, total = 0, 0.0
-    for e in msp:
-        if (e.dxf.layer or "") != layer:
-            continue
-        if e.dxftype() == "LINE":
-            a, b = e.dxf.start, e.dxf.end
-            total += math.dist((a.x, a.y), (b.x, b.y))
-            n += 1
-        elif e.dxftype() == "LWPOLYLINE":
-            n += 1
-    print(f"Layer '{layer}': {n} beam entities, total run {total/1000:,.1f} m")
+    scale = _scale_of(doc, msp)
+    mmpu = scale.mm_per_unit or 1.0
+    tol = 5.0 / mmpu                      # 5 mm, in drawing units
+    segs = _gx.segments(list(_gx.iter_entities(msp)), layer=layer)
+    raw = len(segs)
+
+    # A beam is drawn as its two faces and is broken at every column it
+    # crosses. Counting LINE entities therefore counts each beam about twice
+    # and inflates the run length with it -- which then inflates the concrete,
+    # the shuttering and the steel. Join the pieces, then pair the faces.
+    centres, thicks = _gx.pair_faces(segs, max_sep=1200.0 / mmpu, tol=tol)
+    total = sum(_gx.seg_length(c) for c in centres) * mmpu
+    widths = [t * mmpu for t in thicks if t > 0]
+
+    print(f"Layer '{layer}': {len(centres)} beams, total run "
+          f"{total/1000:,.1f} m")
+    if widths:
+        widths.sort()
+        print(f"Typical width read off the drawing: "
+              f"{widths[len(widths)//2]:,.0f} mm "
+              f"({len(widths)} of {len(centres)} drawn as two faces)")
+    print(f"(from {raw} line segments; faces paired and split spans joined. "
+          f"Units {scale.unit}, {scale.source}.)")
 
 
 def cmd_footings(args):
@@ -2014,8 +2096,13 @@ def cmd_doors(args):
     doc = load_dxf(args.file)
     msp = doc.modelspace()
     pat = re.compile(args.name or "door", re.I)
-    c = Counter(e.dxf.name for e in msp
-                if e.dxftype() == "INSERT" and pat.search(e.dxf.name or ""))
+    # Count references wherever they sit -- a plan is often itself one block,
+    # and its doors are then nested inside it, invisible to a modelspace scan.
+    c = Counter()
+    for e, _depth in _gx.iter_inserts(msp):
+        nm = e.dxf.name or ""
+        if pat.search(nm):
+            c[nm] += _insert_count(e)
     if not c:
         print(f"No blocks matching '{args.name or 'door'}'. "
               "Try the 'blocks' tool to see block names, then --name.")
@@ -2031,8 +2118,13 @@ def cmd_windows(args):
     doc = load_dxf(args.file)
     msp = doc.modelspace()
     pat = re.compile(args.name or "window|glass|vp", re.I)
-    c = Counter(e.dxf.name for e in msp
-                if e.dxftype() == "INSERT" and pat.search(e.dxf.name or ""))
+    # Count references wherever they sit -- a plan is often itself one block,
+    # and its doors are then nested inside it, invisible to a modelspace scan.
+    c = Counter()
+    for e, _depth in _gx.iter_inserts(msp):
+        nm = e.dxf.name or ""
+        if pat.search(nm):
+            c[nm] += _insert_count(e)
     if not c:
         print(f"No blocks matching '{args.name or 'window|glass|vp'}'. "
               "Use 'blocks' to see names, then --name.")
@@ -2618,61 +2710,144 @@ def _dedupe_rects(cols, cell=300):
 # ponytail: 12 m cluster gap + >=8 cols/sheet are heuristics tuned on a real
 # admin-block drawing. Two buildings closer than 12 m would merge; a shed with
 # <8 columns needs min_cols lowered. Expose both as knobs if a drawing misreads.
+def _col_candidates(regs, mmpu, lo=200.0, hi=1000.0, aspect=3.0):
+    """Column-sized shapes as (w_mm, h_mm, cx, cy), judged in millimetres."""
+    out = []
+    for r in regs:
+        w, h = r.w * mmpu, r.h * mmpu
+        if not (lo <= w <= hi and lo <= h <= hi):
+            continue
+        if max(w, h) / max(1e-9, min(w, h)) >= aspect:
+            continue
+        if r.bbox_fill() < 0.55:          # a hollow outline is not a section
+            continue
+        out.append((w, h, r.cx, r.cy))
+    return out
+
+
 def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
     """Read a building from raw geometry -- no tags, no layers, no manual box.
 
-    Columns are rectangles; sheets/floors are spatial clusters of columns;
-    the footprint is the hull the columns enclose. Returns a dict describing
-    the building's typical floor, plus the raw clusters. Everything here comes
-    from shapes and coordinates -- nothing typed on the drawing."""
-    cols = _dedupe_rects(_col_rects(_all_rects(msp)))
-    cents = [(c[2], c[3]) for c in cols]
-    groups = [g for g in _cluster(cents, cluster_m * 1000) if len(g) >= min_cols]
-    groups.sort(key=len, reverse=True)
+    Columns are rectangles; sheets/floors are spatial clusters of columns; the
+    footprint is the hull the columns enclose. Everything here comes from
+    shapes and coordinates -- nothing typed on the drawing.
+
+    Three passes are tried IN ORDER, and each one only runs if the previous
+    found no floor at all. That ordering is deliberate: a drawing that the
+    original reading already handles takes pass 1 and is unaffected by any of
+    the rest, so the wider search can only ever add drawings, never change one
+    that already worked.
+
+      1. PLAIN    closed LWPOLYLINEs sitting in modelspace -- the original
+                  reading, with the size window now applied in millimetres so
+                  a plan drawn in metres or feet is no longer thrown away.
+      2. BROAD    the same clustering, but candidates also come from inside
+                  block references and from legacy polylines, hatches, circles,
+                  solids and rectangles drawn as four loose lines. This is what
+                  rescues a drawing whose columns are a block.
+      3. LATTICE  no minimum count, no footprint gate, no grid window: any
+                  group of repeated column-sized shapes that sits on a lattice
+                  counts. This is what rescues a bungalow, a tight residential
+                  grid and a wide-span shed, none of which can satisfy the
+                  gates in passes 1 and 2.
+    """
+    doc = getattr(msp, "doc", None)
+    # Pass 1 is deliberately narrowed to closed LWPOLYLINEs in modelspace --
+    # precisely what this engine has always read -- so that a drawing it
+    # already handles produces exactly the same answer as before. Circles,
+    # hatches, legacy polylines and block content enter in pass 2.
+    plain_regs = [r for r in _gx.regions(list(msp), recover_lines=False)
+                  if r.kind == "LWPOLYLINE"]
+    scale = (_gx.detect_scale(doc, plain_regs or _gx.regions(list(msp)))
+             if doc is not None else _gx.Scale())
+    mmpu = scale.mm_per_unit or 1.0
 
     titles = _view_titles(msp)
-    clusters = []
-    for g in groups:
-        gcols = [cols[i] for i in g]
-        gcents = [cents[i] for i in g]
-        kind, name = _classify_cluster(msp, titles, gcents)
-        clusters.append({
-            "n": len(gcols),
-            "sizes": Counter((round(w), round(h)) for w, h, _, _ in gcols),
-            "footprint": _concave_area(gcents),
-            "perimeter": _hull_perimeter(gcents),
-            "grid": _median_spacing(gcents),
-            "view": kind, "view_name": name,
-        })
-    if not clusters:
-        return {"clusters": [], "floor_count": 0, "columns_per_floor": 0,
-                "footprint": 0.0, "grid": 0.0, "schedule": Counter(),
-                "total_columns": len(cols)}
+    gap_units = (cluster_m * 1000.0) / mmpu
 
-    # Building floors = clusters with a real footprint on a normal structural
-    # grid (2.5-11 m). Tight-grid / small clusters are tables, legends or detail
-    # blocks -> NOT columns. A cluster whose nearest view title says ELEVATION /
-    # SECTION / SCHEDULE / DETAIL is not a plan, whatever its geometry looks
-    # like -- that's how an elevation's window grid stops reading as columns.
-    floors = [c for c in clusters
-              if c["footprint"] >= 100 and 2.5 <= c["grid"] <= 11
-              and c["view"] in (None, "plan")]
+    def describe(cols, cents, groups):
+        out = []
+        for g in groups:
+            gcols = [cols[i] for i in g]
+            gcents = [cents[i] for i in g]
+            gmm = [(x * mmpu, y * mmpu) for x, y in gcents]   # helpers want mm
+            kind, name = _classify_cluster(msp, titles, gcents)
+            out.append({
+                "n": len(gcols),
+                "sizes": Counter((int(round(w)), int(round(h)))
+                                 for w, h, _, _ in gcols),
+                "footprint": _concave_area(gmm),
+                "perimeter": _hull_perimeter(gmm),
+                "grid": _median_spacing(gmm),
+                "view": kind, "view_name": name,
+            })
+        return out
+
+    def gated(cols):
+        """Original clustering plus the original floor gates."""
+        cols = _dedupe_rects(cols, cell=300.0 / mmpu)
+        cents = [(c[2], c[3]) for c in cols]
+        if not cents:
+            return cols, [], []
+        groups = [g for g in _cluster(cents, gap_units) if len(g) >= min_cols]
+        groups.sort(key=len, reverse=True)
+        clusters = describe(cols, cents, groups)
+        floors = [c for c in clusters
+                  if c["footprint"] >= 100 and 2.5 <= c["grid"] <= 11
+                  and c["view"] in (None, "plan")]
+        return cols, clusters, floors
+
+    # ---- pass 1: PLAIN -------------------------------------------------
+    which = "plain"
+    cols, clusters, floors = gated(_col_candidates(plain_regs, mmpu))
+
+    # ---- pass 2: BROAD -------------------------------------------------
+    broad_regs = None
+    if not floors:
+        broad_regs = _gx.regions(list(_gx.iter_entities(msp)), recover_lines=True)
+        b_cols, b_clusters, b_floors = gated(_col_candidates(broad_regs, mmpu))
+        if b_floors:
+            which, cols, clusters, floors = "broad", b_cols, b_clusters, b_floors
+        elif not clusters:
+            clusters = b_clusters
+
+    # ---- pass 3: LATTICE ----------------------------------------------
+    if not floors:
+        if broad_regs is None:
+            broad_regs = _gx.regions(list(_gx.iter_entities(msp)),
+                                     recover_lines=True)
+        found = _gx.detect_columns(broad_regs, scale)
+        if found.families:
+            cols = [(r.w * mmpu, r.h * mmpu, r.cx, r.cy)
+                    for f in found.families for r in f.members]
+            cols = _dedupe_rects(cols, cell=300.0 / mmpu)
+            cents = [(c[2], c[3]) for c in cols]
+            groups = [g for g in _cluster(cents, gap_units) if len(g) >= 3]
+            groups.sort(key=len, reverse=True)
+            clusters = describe(cols, cents, groups)
+            # No footprint or grid gate: the lattice test already established
+            # that these shapes form a column grid.
+            floors = [c for c in clusters if c["view"] in (None, "plan")]
+            which = "lattice"
+
     if not floors:
         return {"clusters": clusters, "floor_count": 0, "columns_per_floor": 0,
                 "footprint": 0.0, "grid": 0.0, "schedule": Counter(),
-                "total_columns": len(cols), "no_grid": True}
-    # keep only those near the biggest floor footprint (repeated plans of the
-    # SAME building), so detail/schedule blocks don't inflate the floor count.
+                "total_columns": len(cols), "no_grid": True, "scale": scale,
+                "confidence": "none", "pass": "none",
+                "note": "no repeated column-sized shape forms a grid"}
+
     fmax = max(c["footprint"] for c in floors)
-    floors = [c for c in floors if c["footprint"] >= 0.55 * fmax]
+    if fmax > 0:
+        floors = [c for c in floors if c["footprint"] >= 0.55 * fmax]
     rep = max(floors, key=lambda c: c["n"])   # richest plan = best schedule
     fpts = sorted(c["footprint"] for c in floors)
-    # Floor count: distinct titled floor names beat raw cluster count -- a
-    # tripled sheet set repeats every plan, but 'GROUND FLOOR PLAN' is still
-    # one floor however many copies are drawn.
     names = {c["view_name"] for c in floors
              if c["view"] == "plan" and c["view_name"]}
     nfloors = len(names) if names else len(floors)
+    conf = {"plain": "high", "broad": "medium", "lattice": "low"}[which]
+    if scale.confidence == "low" and conf == "high":
+        conf = "medium"
     return {
         "clusters": clusters,
         "floor_count": nfloors,
@@ -2683,6 +2858,12 @@ def _detect_geometry(msp, cluster_m=12.0, min_cols=8):
         "schedule": rep["sizes"],
         "total_columns": len(cols),
         "views": Counter(k for k, _ in {(t[2], t[3]) for t in titles}),
+        "scale": scale,
+        "confidence": conf,
+        "pass": which,
+        "note": (f"{sum(c['n'] for c in floors)} columns on {len(floors)} "
+                 f"plan(s) -- {which} pass, units {scale.unit} "
+                 f"({scale.source})"),
     }
 
 

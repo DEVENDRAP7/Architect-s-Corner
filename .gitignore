@@ -45,3 +45,8 @@ quote_p*.png
 quote_scanned.pdf
 
 rates.json
+
+# Artefacts written by test_all_tools.py when it exercises the export tools
+test_building_entities.csv
+test_building_text.txt
+
